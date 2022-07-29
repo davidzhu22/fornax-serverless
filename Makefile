@@ -17,7 +17,7 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 .PHONY: all
-all: build
+all: build test
 
 ##@ General
 
@@ -40,11 +40,11 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./pkg/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./pkg/apis/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen openapi-gen client-gen ## generate-client-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./pkg/..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./pkg/apis/core/..."
 	# $(OPENAPI_GEN) --go-header-file="hack/boilerplate.go.txt" --input-dirs="./pkg/apis/core/..." --output-package="centaurusinfra.io/fornax-serverless/pkg/apis/openapi"
 
 GENERATE_GROUPS = $(shell pwd)/hack/generate-groups.sh
@@ -70,7 +70,9 @@ test: manifests generate fmt vet envtest ## Run tests.
 .PHONY: build
 build: generate fmt vet ## Build binary.
 	go build ./...
+	go build -o bin/integtestgrpcserver cmd/integtestgrpcserver/main.go
 	go build -o bin/apiserver cmd/apiserver/main.go
+	go build -o bin/nodeagent cmd/nodeagent/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run from your host.
@@ -122,11 +124,18 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: run-local-nodeagent
+	@sudo ./bin/nodeagent --fornaxcore-ip localhost:18001 --disable-swap=false
+
 APISERVER-BOOT = $(shell pwd)/bin/apiserver-boot
-.PHONY: apiserver-boot
-apiserver-local: ## Download apiserver-boot cmd locally if necessary.
+.PHONY: run-apiserver-boot
+run-apiserver-boot: ## Download apiserver-boot cmd locally if necessary.
 	$(call go-get-tool,$(APISERVER-BOOT),sigs.k8s.io/apiserver-builder-alpha/cmd/apiserver-boot@v1.23.0)
 	$(APISERVER-BOOT) run local --run etcd,apiserver
+
+.PHONY: run-apiserver-local
+run-apiserver-local:
+	@bin/apiserver --etcd-servers=http://localhost:2379 --secure-port=9443 --feature-gates=APIPriorityAndFairness=false --standalone-debug-mode --bind-address=127.0.0.1
 
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 .PHONY: controller-gen
@@ -155,6 +164,7 @@ protoc-gen: ## Download protc-gen locally if necessary.
 	$(call go-get-tool,$(PROTOC_GEN),google.golang.org/protobuf/cmd/protoc-gen-go@v1.28)
 	$(call go-get-tool,$(PROTOC_GEN_GRPC),google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2)
 	$(call get-protoc,$(PROTOC))
+	go mod vendor
 	$(PROTOC) -I=./ -I=./vendor \
 		--go_out=../.. \
 		--go-grpc_out=../../ \

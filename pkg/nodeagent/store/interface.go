@@ -18,9 +18,13 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 
-	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/pod"
-	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/session"
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
+)
+
+var (
+	StoreObjectNotFound = errors.New("no such object")
 )
 
 type Store interface {
@@ -31,15 +35,15 @@ type Store interface {
 }
 
 // use json to store node agent store object for now, consider using protobuf if meet performance issue
-func JsonToPod(str string) (*pod.Pod, error) {
-	res := pod.Pod{}
+func JsonToPod(str string) (*types.FornaxPod, error) {
+	res := types.FornaxPod{}
 	if err := json.Unmarshal([]byte(str), &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
 }
 
-func JsonFromPod(obj *pod.Pod) (string, error) {
+func JsonFromPod(obj *types.FornaxPod) (string, error) {
 	var bytes []byte
 	var err error
 	if bytes, err = json.Marshal(obj); err != nil {
@@ -48,15 +52,16 @@ func JsonFromPod(obj *pod.Pod) (string, error) {
 	return string(bytes), nil
 }
 
-func JsonToContainer(str string) (*pod.Container, error) {
-	res := pod.Container{}
+// use json to store node agent store object for now, consider using protobuf if meet performance issue
+func JsonToNode(str string) (*types.FornaxNodeWithRevision, error) {
+	res := types.FornaxNodeWithRevision{}
 	if err := json.Unmarshal([]byte(str), &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
 }
 
-func JsonFromContainer(obj *pod.Container) (string, error) {
+func JsonFromNode(obj *types.FornaxNodeWithRevision) (string, error) {
 	var bytes []byte
 	var err error
 	if bytes, err = json.Marshal(obj); err != nil {
@@ -65,15 +70,15 @@ func JsonFromContainer(obj *pod.Container) (string, error) {
 	return string(bytes), nil
 }
 
-func JsonToSession(str string) (*session.Session, error) {
-	res := session.Session{}
+func JsonToSession(str string) (*types.Session, error) {
+	res := types.Session{}
 	if err := json.Unmarshal([]byte(str), &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
 }
 
-func JsonFromSession(obj *session.Session) (string, error) {
+func JsonFromSession(obj *types.Session) (string, error) {
 	var bytes []byte
 	var err error
 	if bytes, err = json.Marshal(obj); err != nil {
