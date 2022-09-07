@@ -21,12 +21,11 @@ import (
 	"math"
 	"sync"
 
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/config"
 	v1 "k8s.io/api/core/v1"
 )
 
 const (
-	MaximumPodOnNode    = int32(2048)
-	HostPortStartingNum = int32(1024)
 	HostPortNumPerRange = int32(10)
 )
 
@@ -42,14 +41,16 @@ type RangeSlot struct {
 }
 
 type HostPortRange struct {
-	mu         sync.RWMutex
-	rangeSlots []*RangeSlot
+	mu           sync.RWMutex
+	startingPort int32
+	rangeSlots   []*RangeSlot
 }
 
-func NewHostPortRange() *HostPortRange {
+func NewHostPortRange(rangeNum int, startingPort int32) *HostPortRange {
 	return &HostPortRange{
-		mu:         sync.RWMutex{},
-		rangeSlots: make([]*RangeSlot, MaximumPodOnNode),
+		mu:           sync.RWMutex{},
+		startingPort: startingPort,
+		rangeSlots:   make([]*RangeSlot, rangeNum),
 	}
 }
 
@@ -58,7 +59,7 @@ func (pm *HostPortRange) deallocateHostPort(containerPorts []*v1.ContainerPort) 
 	defer pm.mu.Unlock()
 	for _, v := range containerPorts {
 		if v.HostPort > 0 {
-			slotNo := (v.HostPort - HostPortStartingNum) / HostPortNumPerRange
+			slotNo := (v.HostPort - pm.startingPort) / HostPortNumPerRange
 			if pm.rangeSlots[slotNo] != nil {
 				pm.rangeSlots[slotNo].allocatedPorts -= 1
 				if pm.rangeSlots[slotNo].allocatedPorts <= 0 {
@@ -83,7 +84,7 @@ func (pm *HostPortRange) allocateHostPort(node *v1.Node, containerPorts []*v1.Co
 			slot = &RangeSlot{
 				allocatedPorts: 0,
 				rangeSize:      HostPortNumPerRange,
-				nextPortNum:    HostPortStartingNum + int32(slotNo)*HostPortNumPerRange,
+				nextPortNum:    pm.startingPort + int32(slotNo)*HostPortNumPerRange,
 				allocated:      true,
 			}
 			for j := 0; j < int(slot.rangeSize) && i < len(containerPorts); j++ {
@@ -99,7 +100,17 @@ func (pm *HostPortRange) allocateHostPort(node *v1.Node, containerPorts []*v1.Co
 	}
 
 	// if we got here, we are not able to allocate host port for all container ports, rollback allocated slots
-	pm.deallocateHostPort(containerPorts)
+	for _, v := range containerPorts {
+		if v.HostPort > 0 {
+			slotNo := (v.HostPort - pm.startingPort) / HostPortNumPerRange
+			if pm.rangeSlots[slotNo] != nil {
+				pm.rangeSlots[slotNo].allocatedPorts -= 1
+				if pm.rangeSlots[slotNo].allocatedPorts <= 0 {
+					pm.rangeSlots[slotNo] = nil
+				}
+			}
+		}
+	}
 	return InSufficientHostPortError
 }
 
@@ -112,7 +123,7 @@ func (pm *HostPortRange) initRangeWithContainerPorts(containerPorts []v1.Contain
 		if cont.HostPort <= 0 {
 			continue
 		}
-		slotNo := (cont.HostPort - HostPortStartingNum) / HostPortNumPerRange
+		slotNo := (cont.HostPort - pm.startingPort) / HostPortNumPerRange
 		if int(slotNo) >= len(pm.rangeSlots) {
 			array := make([]*RangeSlot, slotNo+10)
 			copy(array, pm.rangeSlots)
@@ -123,7 +134,7 @@ func (pm *HostPortRange) initRangeWithContainerPorts(containerPorts []v1.Contain
 			slot = &RangeSlot{
 				allocatedPorts: 0,
 				rangeSize:      HostPortNumPerRange,
-				nextPortNum:    HostPortStartingNum + int32(slotNo)*HostPortNumPerRange,
+				nextPortNum:    pm.startingPort + int32(slotNo)*HostPortNumPerRange,
 				allocated:      true,
 			}
 			pm.rangeSlots[slotNo] = slot
@@ -209,8 +220,8 @@ func GetContainerPorts(pod *v1.Pod) []v1.ContainerPort {
 	return containerPorts
 }
 
-func NewNodePortManager() *nodePortManager {
+func NewNodePortManager(nodeConfig *config.NodeConfiguration) *nodePortManager {
 	return &nodePortManager{
-		portRange: NewHostPortRange(),
+		portRange: NewHostPortRange(nodeConfig.MaxPods, nodeConfig.NodePortStartingNo),
 	}
 }

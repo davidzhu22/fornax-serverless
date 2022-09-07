@@ -43,7 +43,7 @@ func BuildADummyTerminatedPod(metaNamespaceName string) *v1.Pod {
 			Namespace:       namespace,
 			SelfLink:        "",
 			UID:             "",
-			ResourceVersion: "1",
+			ResourceVersion: "0",
 			Generation:      0,
 			CreationTimestamp: metav1.Time{
 				Time: time.Now(),
@@ -130,11 +130,6 @@ func BuildContainer(name, image string, hostPort int32, containerPort int32, env
 	return container
 }
 
-func UniquePodName(pod *v1.Pod) string {
-	name, _ := cache.MetaNamespaceKeyFunc(pod)
-	return name
-}
-
 func GetPodResourceList(v1pod *v1.Pod) *v1.ResourceList {
 	resourceList := v1.ResourceList{}
 	for _, v := range v1pod.Spec.Containers {
@@ -172,8 +167,10 @@ func GetPodResourceList(v1pod *v1.Pod) *v1.ResourceList {
 	return &resourceList
 }
 
-func MergePodStatus(oldPod, newPod *v1.Pod) {
+func MergePod(oldPod, newPod *v1.Pod) {
 	oldPod.Status = *newPod.Status.DeepCopy()
+	oldPod.ResourceVersion = newPod.ResourceVersion
+
 	for k, v := range newPod.GetLabels() {
 		oldPod.Labels[k] = v
 	}
@@ -190,26 +187,33 @@ func MergePodStatus(oldPod, newPod *v1.Pod) {
 		oldPod.DeletionGracePeriodSeconds = newPod.DeletionGracePeriodSeconds
 	}
 
+	// pod spec could be modified by NodeAgent, especially container port mapping
 	if !reflect.DeepEqual(oldPod.Spec, newPod.Spec) {
-		// pod spec could be modified by NodeAgent, especially container port mapping
-		// we just horner newPod, and replace oldPod's spec
 		oldPod.Spec = newPod.Spec
 	}
 }
 
-func IsPodNotTerminated(pod *v1.Pod) bool {
-	return !IsPodTerminated(pod)
+func PodIsRunning(pod *v1.Pod) bool {
+	return pod.Status.Phase == v1.PodRunning
 }
 
-func IsPodTerminated(pod *v1.Pod) bool {
+func PodIsPending(pod *v1.Pod) bool {
+	return pod.Status.Phase == v1.PodPending
+}
+
+func PodNotTerminated(pod *v1.Pod) bool {
+	return !PodIsTerminated(pod)
+}
+
+func PodIsTerminated(pod *v1.Pod) bool {
 	return (pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed)
 }
 
-func IsNotInGracePeriod(pod *v1.Pod) bool {
-	return !IsInGracePeriod(pod)
+func PodNotInGracePeriod(pod *v1.Pod) bool {
+	return !PodInGracePeriod(pod)
 }
 
-func IsInGracePeriod(pod *v1.Pod) bool {
+func PodInGracePeriod(pod *v1.Pod) bool {
 	graceSeconds := pod.GetDeletionGracePeriodSeconds()
 	deleteTimeStamp := pod.GetDeletionTimestamp()
 	return graceSeconds != nil && deleteTimeStamp != nil && deleteTimeStamp.Add((time.Duration(*graceSeconds) * time.Second)).After(time.Now())

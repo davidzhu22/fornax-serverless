@@ -1,0 +1,12 @@
+apiVersion: core.fornax-serverless.centaurusinfra.io/v1
+kind: ApplicationSession
+metadata:
+  name: echo-session-9
+  labels:
+    application: echoserver
+spec:
+  applicationName: game1/echoserver
+  sessionData: my-session-data
+  openTimeoutSeconds: 30
+  closeGracePeriodSeconds: 30
+  killInstanceWhenSessionClosed: false

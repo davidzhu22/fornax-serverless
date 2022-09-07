@@ -1,0 +1,12 @@
+apiVersion: core.fornax-serverless.centaurusinfra.io/v1
+kind: ApplicationSession
+metadata:
+  name: nginx-session-9
+  labels:
+    application: nginx
+spec:
+  applicationName: game1/nginx
+  sessionData: my-nginx1-session-data
+  openTimeoutSeconds: 30
+  closeGracePeriodSeconds: 30
+  killInstanceWhenSessionClosed: true

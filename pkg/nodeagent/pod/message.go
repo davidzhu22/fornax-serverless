@@ -18,6 +18,7 @@ package pod
 
 import (
 	"centaurusinfra.io/fornax-serverless/pkg/fornaxcore/grpc"
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/session"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
 	fornaxtypes "centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
 	criv1 "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -26,14 +27,14 @@ import (
 func BuildFornaxcoreGrpcPodStateForTerminatedPod(nodeRevision int64, pod *fornaxtypes.FornaxPod) *grpc.FornaxCoreMessage {
 	state := grpc.PodState_Terminated
 	s := grpc.PodState{
-		NodeRevision: &nodeRevision,
-		State:        &state,
+		NodeRevision: nodeRevision,
+		State:        state,
 		Pod:          pod.Pod.DeepCopy(),
 		Resource:     &grpc.PodResource{},
 	}
 	messageType := grpc.MessageType_POD_STATE
 	return &grpc.FornaxCoreMessage{
-		MessageType: &messageType,
+		MessageType: messageType,
 		MessageBody: &grpc.FornaxCoreMessage_PodState{
 			PodState: &s,
 		},
@@ -41,23 +42,29 @@ func BuildFornaxcoreGrpcPodStateForTerminatedPod(nodeRevision int64, pod *fornax
 }
 
 func BuildFornaxcoreGrpcPodState(nodeRevision int64, pod *fornaxtypes.FornaxPod) *grpc.FornaxCoreMessage {
+	sessionStates := []*grpc.SessionState{}
+	for _, v := range pod.Sessions {
+		s := session.BuildFornaxcoreGrpcSessionState(nodeRevision, v)
+		sessionStates = append(sessionStates, s.GetSessionState())
+	}
 	s := grpc.PodState{
-		NodeRevision: &nodeRevision,
+		NodeRevision: nodeRevision,
 		State:        PodStateToFornaxState(pod),
 		Pod:          pod.Pod.DeepCopy(),
 		// TODO
-		Resource: &grpc.PodResource{},
+		Resource:      &grpc.PodResource{},
+		SessionStates: sessionStates,
 	}
 	messageType := grpc.MessageType_POD_STATE
 	return &grpc.FornaxCoreMessage{
-		MessageType: &messageType,
+		MessageType: messageType,
 		MessageBody: &grpc.FornaxCoreMessage_PodState{
 			PodState: &s,
 		},
 	}
 }
 
-func PodStateToFornaxState(pod *fornaxtypes.FornaxPod) *grpc.PodState_State {
+func PodStateToFornaxState(pod *fornaxtypes.FornaxPod) grpc.PodState_State {
 	var grpcState grpc.PodState_State
 	switch pod.FornaxPodState {
 	case types.PodStateCreating:
@@ -85,5 +92,5 @@ func PodStateToFornaxState(pod *fornaxtypes.FornaxPod) *grpc.PodState_State {
 		grpcState = grpc.PodState_Creating
 	}
 
-	return &grpcState
+	return grpcState
 }

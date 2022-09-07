@@ -48,7 +48,7 @@ const (
 	DefaultRootPath                   = "/var/lib/nodeagent"
 	DefaultDBName                     = "nodeagent.sqlite"
 	DefaultContainerRuntimeEndpoint   = "unix:///run/containerd/containerd.sock"
-	DefaultMaxPods                    = 100
+	DefaultMaxPods                    = 1000
 	DefaultPodPidLimits               = -1
 	DefaultCgroupRoot                 = "/"
 	DefaultCgroupDriver               = "cgroupfs"
@@ -68,6 +68,8 @@ const (
 	DefaultPluginContainersDirName    = "plugin-containers"
 	DefaultPodResourcesDirName        = "pod-resources"
 	DefaultMemoryThrottlingFactor     = 0.8
+	DefaultSessionServicePort         = 1022
+	DefaultNodePortStartingNum        = 1024
 	KubeletPluginsDirSELinuxLabel     = "system_u:object_r:container_file_t:s0"
 	DefaultPodCgroupName              = "containers"
 )
@@ -78,7 +80,7 @@ type NodeConfiguration struct {
 	CgroupRoot               string
 	CgroupDriver             string
 	DatabaseURL              string // /var/lib/nodeagent/db/nodeagent.sqlite
-	FornaxCoreIPs            []string
+	FornaxCoreUrls           []string
 	Hostname                 string
 	MemoryQoS                bool
 	DisableSwap              bool
@@ -105,6 +107,8 @@ type NodeConfiguration struct {
 	SystemReserved           v1.ResourceList
 	SeccompProfileRoot       string
 	SeccompDefault           bool
+	NodePortStartingNo       int32
+	SessionServicePort       int32
 }
 
 func DefaultNodeConfiguration() (*NodeConfiguration, error) {
@@ -127,7 +131,7 @@ func DefaultNodeConfiguration() (*NodeConfiguration, error) {
 		CgroupRoot:               DefaultCgroupRoot,
 		CgroupDriver:             DefaultCgroupDriver,
 		DatabaseURL:              fmt.Sprintf("%s/db/%s", DefaultRootPath, DefaultDBName),
-		FornaxCoreIPs:            []string{},
+		FornaxCoreUrls:           []string{},
 		Hostname:                 hostname,
 		MaxPods:                  DefaultMaxPods,
 		MaxContainerPerPod:       DefaultMaxContainerPerPod,
@@ -142,6 +146,8 @@ func DefaultNodeConfiguration() (*NodeConfiguration, error) {
 		PodCgroupName:            DefaultPodCgroupName,
 		RootPath:                 DefaultRootPath,
 		SeccompProfileRoot:       filepath.Join(DefaultRootPath, "seccomp"),
+		NodePortStartingNo:       DefaultNodePortStartingNum,
+		SessionServicePort:       DefaultSessionServicePort,
 		SeccompDefault:           false,
 		ProtectKernelDefaults:    false,
 		SystemCgroupName:         DefaultSystemCgroupName,
@@ -196,6 +202,6 @@ func AddConfigFlags(flagSet *pflag.FlagSet, nodeConfig *NodeConfiguration) {
 
 	flagSet.StringVar(&nodeConfig.ContainerRuntimeEndpoint, "remote-runtime-endpoint", nodeConfig.ContainerRuntimeEndpoint, "container runtime remote endpoint")
 
-	flagSet.StringArrayVar(&nodeConfig.FornaxCoreIPs, "fornaxcore-ip", nodeConfig.FornaxCoreIPs, "IPv4 addresses of the fornaxcores. must provided")
+	flagSet.StringArrayVar(&nodeConfig.FornaxCoreUrls, "fornaxcore-url", nodeConfig.FornaxCoreUrls, "addresses of the fornaxcores, format is ip:port. must provided")
 
 }

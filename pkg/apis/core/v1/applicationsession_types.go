@@ -20,6 +20,7 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -53,78 +54,90 @@ type ApplicationSessionList struct {
 // ApplicationSessionSpec defines the desired state of ApplicationSession
 type ApplicationSessionSpec struct {
 
-	// SessionName, client provided idemponency token
-	SessionName string `json:"sessionName,omitempty"`
+	// ApplicationName, client provided application
+	ApplicationName string `json:"applicationName,omitempty"`
 
 	// Session data is a base64 string pass through into application instances when session started
 	// +optional
 	SessionData string `json:"sessionData,omitempty"`
+
+	// if a application instance evacuated all session, kill it, default true
+	KillInstanceWhenSessionClosed bool `json:"killInstanceWhenSessionClosed,omitempty"`
+
+	// how long to wait for before close session, default 60
+	CloseGracePeriodSeconds *uint16 `json:"closeGracePeriodSeconds,omitempty"`
+
+	// how long to wait for session status from Starting to Available
+	OpenTimeoutSeconds uint16 `json:"openTimeoutSeconds,omitempty"`
 }
 
 // +enum
 type SessionStatus string
 
 const (
-	// session is allocated to instance, at least one client join
-	Starting SessionStatus = "Starting"
+	// session is not allocated yet
+	SessionStatusUnspecified SessionStatus = ""
 
-	// session is available to instance, no client session yet
-	Available SessionStatus = "Available"
+	// session is not allocated yet
+	SessionStatusPending SessionStatus = "Pending"
 
-	// session is dead, no heartbeat
-	Closed SessionStatus = "Closed"
+	// session is send to instance, waiting for instance report session state
+	SessionStatusStarting SessionStatus = "Starting"
+
+	// session is started on instance, not used yet
+	SessionStatusAvailable SessionStatus = "Available"
+
+	// session is started on instance, session is being used
+	SessionStatusOccupied SessionStatus = "Occupied"
+
+	// session is closing on instance, wait for session client exit
+	SessionStatusClosing SessionStatus = "Closing"
+
+	// session is closed on instance
+	SessionStatusClosed SessionStatus = "Closed"
+
+	// session is dead, no heartbeat, should close and start a new one
+	SessionStatusTimeout SessionStatus = "Timeout"
 )
 
-// +enum
-type SessionAction string
+type AccessEndPoint struct {
+	// TCP/UDP
+	Protocol v1.Protocol `json:"protocol,omitempty"`
 
-const (
-	// client session join
-	ClientJoin SessionAction = "ClientJoin"
+	// IPaddress
+	IPAddress string `json:"ipAddress,omitempty"`
 
-	// client session exit
-	ClientExit SessionAction = "ClientExit"
-)
-
-type SessionHistory struct {
-	// client session
-	ClientSession corev1.LocalObjectReference `json:"clientSession,omitempty"`
-
-	// The last time this deployment was updated.
-	Action SessionAction `json:"action,omitempty"`
-
-	// The last time this deployment was updated.
-	UpdateTime metav1.Time `json:"updateTime,omitempty"`
-
-	// The reason for the last transition.
-	Reason string `json:"reason,omitempty"`
-
-	// A human readable message indicating details about the transition.
-	Message string `json:"message,omitempty"`
+	// Port
+	Port int32 `json:"port,omitempty"`
 }
 
 // ApplicationSessionStatus defines the observed state of ApplicationSession
 type ApplicationSessionStatus struct {
 	// Endpoint this session is using
 	// +optional
-	IngressEndpointReference corev1.LocalObjectReference `json:"ingressEndpointReference,omitempty"`
+	PodReference *v1.LocalObjectReference `json:"podReference,omitempty"`
+
+	// Endpoint this session is using
+	// +optional
+	AccessEndPoints []AccessEndPoint `json:"accessEndPoints,omitempty"`
 
 	// Session status, is Starting, Available or Closed.
 	// +optional
 	SessionStatus SessionStatus `json:"sessionStatus,omitempty"`
 
-	// Represents the latest available observations of a deployment's current state.
 	// +optional
-	// +patchMergeKey=updateTime
 	// +patchStrategy=merge
 	// +listType=set
-	History []SessionHistory `json:"history,omitempty" patchStrategy:"merge" patchMergeKey:"updateTime"`
+	ClientSessions []corev1.LocalObjectReference `json:"clientSessions,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 
 	// +optional
-	// +patchMergeKey=name
-	// +patchStrategy=merge
-	// +listType=set
-	ClientSessions []corev1.LocalObjectReference `json:"clientSessions,omitempty"  patchStrategy:"merge" patchMergeKey:"name"`
+	AvailableTime *metav1.Time `json:"availableTime,omitempty"`
+
+	// +optional
+	CloseTime *metav1.Time `json:"closeTime,omitempty"`
+
+	// +optional, for metrics test
+	AvailableTimeMicro int64 `json:"availableTimeMicro,omitempty"`
 }
 
 var _ resource.Object = &ApplicationSession{}
@@ -160,18 +173,18 @@ func (in *ApplicationSession) IsStorageVersion() bool {
 
 func (in *ApplicationSession) Validate(ctx context.Context) field.ErrorList {
 	errorList := make(field.ErrorList, 0)
-	if len(in.OwnerReferences) <= 0 {
+	if len(in.Spec.ApplicationName) == 0 {
 		err := field.Error{
 			Type:  field.ErrorTypeRequired,
-			Field: "OwnerReferences",
+			Field: "Spec.ApplicationName",
 		}
 		errorList = append(errorList, &err)
 	}
 
-	if len(in.Spec.SessionName) == 0 {
+	if len(in.Spec.SessionData) == 0 {
 		err := field.Error{
 			Type:  field.ErrorTypeRequired,
-			Field: "Spec.SessionName",
+			Field: "Spec.SessionData",
 		}
 		errorList = append(errorList, &err)
 	}

@@ -18,32 +18,11 @@ package node
 
 import (
 	"sync"
-	"time"
 
-	"centaurusinfra.io/fornax-serverless/pkg/collection"
+	ie "centaurusinfra.io/fornax-serverless/pkg/fornaxcore/internal"
 	"centaurusinfra.io/fornax-serverless/pkg/fornaxcore/store"
 	fornaxutil "centaurusinfra.io/fornax-serverless/pkg/util"
-
-	v1 "k8s.io/api/core/v1"
 )
-
-type NodeWorkingState string
-
-const (
-	NodeWorkingStateRegistering NodeWorkingState = "registering"
-	NodeWorkingStateTerminating NodeWorkingState = "terminating"
-	NodeWorkingStateInActive    NodeWorkingState = "inactive"
-	NodeWorkingStateRunning     NodeWorkingState = "running"
-)
-
-type FornaxNodeWithState struct {
-	Node       *v1.Node
-	Revision   int64
-	State      NodeWorkingState
-	Pods       *collection.ConcurrentStringSet
-	DaemonPods map[string]*v1.Pod
-	LastSeen   time.Time
-}
 
 type NodeUpdateBucket struct {
 	internalGlobalRevision int64
@@ -78,28 +57,71 @@ func (nub *NodeUpdateBucket) appendUpdate(update interface{}) {
 
 type StaleNodeBucket struct {
 	sync.RWMutex
-	bucketStale   map[string]*FornaxNodeWithState
-	bucketRefresh map[string]*FornaxNodeWithState
+	bucketStale   map[string]*ie.FornaxNodeWithState
+	bucketRefresh map[string]*ie.FornaxNodeWithState
 }
 
-func (snb *StaleNodeBucket) refreshNode(node *FornaxNodeWithState) {
+func (snb *StaleNodeBucket) refreshNode(node *ie.FornaxNodeWithState) {
 	snb.Lock()
 	defer snb.Unlock()
-	snb.bucketRefresh[fornaxutil.UniqueNodeName(node.Node)] = node
-	delete(snb.bucketStale, fornaxutil.UniqueNodeName(node.Node))
+	snb.bucketRefresh[fornaxutil.Name(node.Node)] = node
+	delete(snb.bucketStale, fornaxutil.Name(node.Node))
 }
 
-func (snb *StaleNodeBucket) getStaleNodes() []*FornaxNodeWithState {
+func (snb *StaleNodeBucket) getStaleNodes() []*ie.FornaxNodeWithState {
 	snb.Lock()
 	defer snb.Unlock()
 
-	var stales []*FornaxNodeWithState
+	var stales []*ie.FornaxNodeWithState
 	for _, v := range snb.bucketStale {
 		stales = append(stales, v)
 	}
 
-	newBucket := map[string]*FornaxNodeWithState{}
+	newBucket := map[string]*ie.FornaxNodeWithState{}
 	snb.bucketStale = snb.bucketRefresh
 	snb.bucketRefresh = newBucket
 	return stales
+}
+
+type NodePool struct {
+	mu    sync.RWMutex
+	nodes map[string]*ie.FornaxNodeWithState
+}
+
+func (pool *NodePool) add(name string, pod *ie.FornaxNodeWithState) {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	pool.nodes[name] = pod
+}
+
+func (pool *NodePool) delete(name string) {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	delete(pool.nodes, name)
+}
+
+func (pool *NodePool) get(name string) *ie.FornaxNodeWithState {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if n, found := pool.nodes[name]; found {
+		return n
+	}
+
+	return nil
+}
+
+func (pool *NodePool) length() int {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	return len(pool.nodes)
+}
+
+func (pool *NodePool) list() []*ie.FornaxNodeWithState {
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	nodes := []*ie.FornaxNodeWithState{}
+	for _, v := range pool.nodes {
+		nodes = append(nodes, v)
+	}
+	return nodes
 }

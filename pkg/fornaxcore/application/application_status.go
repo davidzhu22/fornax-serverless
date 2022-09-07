@@ -23,166 +23,166 @@ import (
 	"time"
 
 	fornaxv1 "centaurusinfra.io/fornax-serverless/pkg/apis/core/v1"
+	listerv1 "centaurusinfra.io/fornax-serverless/pkg/client/listers/core/v1"
 	"centaurusinfra.io/fornax-serverless/pkg/util"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
-	k8spodutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
 const (
 	// The number of times we retry updating a Application's status.
-	UPDATE_RETRIES = 1
+	UPDATE_RETRIES = 2
 )
 
-// updateApplicationStatus attempts to update the Status.Replicas of the given Application, with a single GET/PUT retry.
-func (appc *ApplicationManager) updateApplicationStatus(application *fornaxv1.Application, newStatus *fornaxv1.ApplicationStatus) (*fornaxv1.Application, error) {
-	client := appc.apiServerClient.CoreV1().Applications(application.Namespace)
+type ApplicationStatusUpdate struct {
+	name   string
+	status *fornaxv1.ApplicationStatus
+}
 
-	var getErr, updateErr error
-	var updatedApplication *fornaxv1.Application
+type ApplicationStatusManager struct {
+	applicationLister listerv1.ApplicationLister
+	statusUpdate      chan ApplicationStatusUpdate
+	appStatus         map[string]*fornaxv1.ApplicationStatus
+}
 
-	finalizer := application.Finalizers
-	if newStatus.TotalInstances == 0 {
-		util.RemoveFinalizer(&application.ObjectMeta, fornaxv1.FinalizerApplicationPod)
-	} else {
-		util.AddFinalizer(&application.ObjectMeta, fornaxv1.FinalizerApplicationPod)
+func NewApplicationStatusManager(appLister listerv1.ApplicationLister) *ApplicationStatusManager {
+	return &ApplicationStatusManager{
+		applicationLister: appLister,
+		statusUpdate:      make(chan ApplicationStatusUpdate, 500),
+		appStatus:         map[string]*fornaxv1.ApplicationStatus{},
 	}
-	if len(finalizer) != len(application.Finalizers) {
-		for i := 0; i <= UPDATE_RETRIES; i++ {
-			updatedApplication, updateErr = client.Update(context.TODO(), application, metav1.UpdateOptions{})
-			if updateErr == nil {
-				return updatedApplication, nil
+}
+
+// Run receive application status from channel and update applications use api service client
+func (asm *ApplicationStatusManager) Run(ctx context.Context) {
+	klog.Info("Starting fornaxv1 application status manager")
+
+	go func() {
+		defer klog.Info("Shutting down fornaxv1 application status manager")
+
+		FornaxCore_ApplicationStatusManager_Retry := "FornaxCore_ApplicationStatusManager_StatusUpdate_Retry"
+		for {
+			select {
+			case <-ctx.Done():
+				break
+			case update := <-asm.statusUpdate:
+				// it assume application status is calcualted by application sync is always sequencially
+				// when there are multiple status of same application in channel ,
+				// the later one is supposed to be newer status, so, we only keep newer status,
+				// after received all updates in channel, update latest status of application
+				asm.appStatus[update.name] = update.status
+				klog.Infof("Try to update application", "status", *update.status)
+				remainingLen := len(asm.statusUpdate)
+				for i := 0; i < remainingLen; i++ {
+					update := <-asm.statusUpdate
+					asm.appStatus[update.name] = update.status
+				}
+
+				hasError := false
+				updatedApps := []string{}
+				for app, status := range asm.appStatus {
+					if app == FornaxCore_ApplicationStatusManager_Retry {
+						// FornaxCore_ApplicationStatusManager_Retry app is fake application sinal used to trigger retry
+						continue
+					}
+					err := asm.updateApplicationStatus(app, status)
+					if err == nil {
+						updatedApps = append(updatedApps, app)
+					} else {
+						hasError = true
+						klog.ErrorS(err, "Failed to update application status", "application", app)
+					}
+				}
+				for _, v := range updatedApps {
+					delete(asm.appStatus, v)
+				}
+
+				time.Sleep(50 * time.Millisecond)
+				// a trick to retry, all failed status update are still in map, send a fake update to retry,
+				// it's bit risky, if some guy put a lot of event into channel before we can put a retry signal, it will stuck
+				// checking channel current length must be zero could mitigate a bit
+				if hasError {
+					if len(asm.statusUpdate) == 0 {
+						asm.statusUpdate <- ApplicationStatusUpdate{
+							name:   FornaxCore_ApplicationStatusManager_Retry,
+							status: &fornaxv1.ApplicationStatus{},
+						}
+					}
+				}
 			}
 		}
+	}()
+}
+
+func (asm *ApplicationStatusManager) UpdateApplicationStatus(application *fornaxv1.Application, newStatus *fornaxv1.ApplicationStatus) {
+	asm.statusUpdate <- ApplicationStatusUpdate{
+		name:   util.Name(application),
+		status: newStatus.DeepCopy(),
+	}
+	klog.Infof("Send application status message", "status", *newStatus, "len", len(asm.statusUpdate))
+}
+
+// updateApplicationStatus attempts to update the Status of the given Application and return updated Application
+func (asm *ApplicationStatusManager) updateApplicationStatus(applicationKey string, newStatus *fornaxv1.ApplicationStatus) error {
+	var updateErr error
+	var updatedApplication *fornaxv1.Application
+
+	apiServerClient := util.GetFornaxCoreApiClient()
+	application, updateErr := GetApplication(apiServerClient, applicationKey)
+	if updateErr != nil {
+		if apierrors.IsNotFound(updateErr) {
+			return nil
+		}
+		return updateErr
 	}
 
 	if reflect.DeepEqual(application.Status, *newStatus) {
-		// no change, return
-		return application, nil
+		klog.Infof("Application status has no change", "newStatus", *newStatus, "oldStatus", application.Status)
+		return nil
 	}
 
-	applicationKey, _ := cache.MetaNamespaceKeyFunc(application)
-	klog.Infof(fmt.Sprintf("Updating application status for %s, ", applicationKey) +
-		fmt.Sprintf("desiredInstances %d->%d, ", application.Status.DesiredInstances, newStatus.DesiredInstances) +
-		fmt.Sprintf("availableInstances %d->%d, ", application.Status.TotalInstances, newStatus.TotalInstances) +
-		fmt.Sprintf("pendingInstances %d->%d, ", application.Status.PendingInstances, newStatus.PendingInstances) +
-		fmt.Sprintf("deletingInstances %d->%d, ", application.Status.DeletingInstances, newStatus.DeletingInstances) +
-		fmt.Sprintf("readyInstances %d->%d, ", application.Status.ReadyInstances, newStatus.ReadyInstances) +
-		fmt.Sprintf("idleInstances %d->%d, ", application.Status.IdleInstances, newStatus.IdleInstances))
-
+	client := apiServerClient.CoreV1().Applications(application.Namespace)
 	for i := 0; i <= UPDATE_RETRIES; i++ {
-		application.Status = *newStatus
-		updatedApplication, updateErr = client.UpdateStatus(context.TODO(), application, metav1.UpdateOptions{})
+		klog.Infof(fmt.Sprintf("Updating application status for %s, ", util.Name(application)) +
+			fmt.Sprintf("totalInstances %d->%d, ", application.Status.TotalInstances, newStatus.TotalInstances) +
+			fmt.Sprintf("desiredInstances %d->%d, ", application.Status.DesiredInstances, newStatus.DesiredInstances) +
+			fmt.Sprintf("pendingInstances %d->%d, ", application.Status.PendingInstances, newStatus.PendingInstances) +
+			fmt.Sprintf("deletingInstances %d->%d, ", application.Status.DeletingInstances, newStatus.DeletingInstances) +
+			fmt.Sprintf("runningInstances %d->%d, ", application.Status.RunningInstances, newStatus.RunningInstances) +
+			fmt.Sprintf("idleInstances %d->%d, ", application.Status.IdleInstances, newStatus.IdleInstances))
+
+		updatedApplication = application.DeepCopy()
+		updatedApplication.Status = *newStatus
+		updatedApplication, updateErr = client.UpdateStatus(context.TODO(), updatedApplication, metav1.UpdateOptions{})
 		if updateErr == nil {
-			return updatedApplication, nil
-		}
-	}
-
-	// if we get here, it means update failed, but get application in case update actually succeeded
-	if application, getErr = client.Get(context.TODO(), application.Name, metav1.GetOptions{}); getErr != nil {
-		return application, getErr
-	} else {
-		return application, getErr
-	}
-}
-
-func (appc *ApplicationManager) getApplicationPoolSummary(pool *ApplicationPodPool) ApplicationPodPoolSummary {
-	summary := ApplicationPodPoolSummary{}
-	pods := pool.getPodNames()
-	for _, k := range pods {
-		pod := appc.podManager.FindPod(k)
-		if pod != nil {
-			summary.totalCount += 1
-			if pod.DeletionTimestamp == nil {
-				if k8spodutil.IsPodReady(pod) {
-					summary.readyCount += 1
-					// TODO, change this logic after session management is added
-					summary.idleCount += 1
-				} else {
-					summary.pendingCount += 1
-				}
-			} else {
-				summary.deletingCount += 1
-			}
+			break
 		} else {
-			summary.deletedCount += 1
+			// set it again, returned updatedApplication could be polluted if there is error
+			updatedApplication = application.DeepCopy()
+			updatedApplication.Status = *newStatus
+		}
+
+		if updateErr != nil {
+			return updateErr
 		}
 	}
 
-	return summary
-}
-
-func (appc *ApplicationManager) calculateStatus(application *fornaxv1.Application, desiredCount int, deploymentErr error) *fornaxv1.ApplicationStatus {
-
-	applicationKey, err := cache.MetaNamespaceKeyFunc(application)
-	if err != nil {
-		return nil
-	}
-
-	var poolSummary ApplicationPodPoolSummary
-	if pool, found := appc.applicationPodPools[applicationKey]; found {
-		poolSummary = appc.getApplicationPoolSummary(pool)
+	// update finalizer
+	finalizers := updatedApplication.Finalizers
+	if newStatus.TotalInstances == 0 {
+		util.RemoveFinalizer(&updatedApplication.ObjectMeta, fornaxv1.FinalizerApplicationPod)
 	} else {
-		return nil
+		util.AddFinalizer(&updatedApplication.ObjectMeta, fornaxv1.FinalizerApplicationPod)
 	}
-
-	if application.Status.DesiredInstances == int32(desiredCount) &&
-		application.Status.TotalInstances == poolSummary.totalCount &&
-		application.Status.IdleInstances == poolSummary.idleCount &&
-		application.Status.DeletingInstances == poolSummary.deletingCount &&
-		application.Status.PendingInstances == poolSummary.pendingCount &&
-		application.Status.ReadyInstances == poolSummary.readyCount {
-		// no change, return old status
-		return application.Status.DeepCopy()
+	if len(updatedApplication.Finalizers) != len(finalizers) {
+		for i := 0; i <= UPDATE_RETRIES; i++ {
+			_, updateErr = client.Update(context.TODO(), updatedApplication, metav1.UpdateOptions{})
+			if updateErr == nil {
+				break
+			}
+		}
 	}
-
-	newStatus := application.Status.DeepCopy()
-	newStatus.DesiredInstances = int32(desiredCount)
-	newStatus.TotalInstances = poolSummary.totalCount
-	newStatus.PendingInstances = poolSummary.pendingCount
-	newStatus.DeletingInstances = poolSummary.deletingCount
-	newStatus.IdleInstances = poolSummary.idleCount
-	newStatus.ReadyInstances = poolSummary.readyCount
-	if deploymentErr != nil {
-		newStatus.DeploymentStatus = fornaxv1.DeploymentStatusPartialSuccess
-	} else {
-		newStatus.DeploymentStatus = fornaxv1.DeploymentStatusSuccess
-	}
-
-	if desiredCount > 0 && poolSummary.totalCount == 0 {
-		newStatus.DeploymentStatus = fornaxv1.DeploymentStatusFailure
-	}
-
-	var action fornaxv1.DeploymentAction
-	if int32(desiredCount) >= poolSummary.totalCount {
-		action = fornaxv1.DeploymentActionCreateInstance
-	} else {
-		action = fornaxv1.DeploymentActionDeleteInstance
-	}
-
-	message := fmt.Sprintf("sync application, total: %d, desired: %d, pending: %d, deleting: %d, ready: %d, idle: %d",
-		newStatus.TotalInstances,
-		newStatus.DesiredInstances,
-		newStatus.PendingInstances,
-		newStatus.DeletingInstances,
-		newStatus.ReadyInstances,
-		newStatus.IdleInstances)
-
-	if deploymentErr != nil {
-		message = fmt.Sprintf("%s, error: %s", message, deploymentErr.Error())
-	}
-
-	deploymentHistory := fornaxv1.DeploymentHistory{
-		Action: action,
-		UpdateTime: metav1.Time{
-			Time: time.Now(),
-		},
-		Reason:  "sync application",
-		Message: message,
-	}
-	newStatus.History = append(newStatus.History, deploymentHistory)
-
-	return newStatus
+	return updateErr
 }

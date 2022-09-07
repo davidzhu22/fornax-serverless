@@ -17,8 +17,17 @@ limitations under the License.
 package v1
 
 const (
-	LabelFornaxCore            = "core.fornax-serverless.centaurusinfra.io"
-	LabelFornaxCoreNode        = "node.fornax-serverless.centaurusinfra.io"
-	LabelFornaxCoreNodeDaemon  = "daemon.fornax-serverless.centaurusinfra.io"
-	LabelFornaxCoreApplication = "application.core.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCore                   = "core.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCoreNode               = "node.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCorePod                = "pod.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCoreNodeDaemon         = "daemon.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCoreApplication        = "application.core.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCoreCreationUnixMicro  = "create.unixmicro.core.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCoreApplicationSession = "applicationsession.core.fornax-serverless.centaurusinfra.io"
+	LabelFornaxCoreSessionService     = "sessionservice.core.fornax-serverless.centaurusinfra.io"
+)
+
+var (
+	ApplicationKind        = SchemeGroupVersion.WithKind("Application")
+	ApplicationSessionKind = SchemeGroupVersion.WithKind("ApplicationSession")
 )

@@ -1,0 +1,24 @@
+spec:
+  containers:
+    - image: nginx:latest
+      name: nginx
+      resources:
+        requests:
+          memory: "500M"
+          cpu: "0.5"
+        limits:
+          memory: "500M"
+          cpu: "0.5"
+      ports:
+        - containerPort: 80
+          name: nginx
+  sessionConfig:
+    numOfSessionOfInstance: 4
+  scalingPolicy:
+    minimumInstance: 0
+    maximumInstance: 3
+    burst: 1
+    scalingPolicyType: idle_session_number
+    idleSessionNumThreshold:
+      highWaterMark: 3
+      lowWaterMark: 0

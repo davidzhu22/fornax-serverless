@@ -16,6 +16,8 @@ limitations under the License.
 package dependency
 
 import (
+	"context"
+
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/cadvisor"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/config"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/images"
@@ -23,6 +25,8 @@ import (
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/qos"
 	resourcemanager "centaurusinfra.io/fornax-serverless/pkg/nodeagent/resource"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/runtime"
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/sessionservice"
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/sessionservice/server"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/store/factory"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/store/sqlite"
 	v1 "k8s.io/api/core/v1"
@@ -44,6 +48,7 @@ type Dependencies struct {
 	VolumeManager     resourcemanager.VolumeManager
 	NodeStore         *factory.NodeStore
 	PodStore          *factory.PodStore
+	SessionService    sessionservice.SessionService
 }
 
 func InitBasicDependencies(nodeConfig config.NodeConfiguration) (*Dependencies, error) {
@@ -88,6 +93,14 @@ func InitBasicDependencies(nodeConfig config.NodeConfiguration) (*Dependencies, 
 		return nil, err
 	}
 
+	// sessionService := sessionservice.NewFakeSessionService()
+	sessionService := server.NewSessionService()
+	err = sessionService.Run(context.Background(), nodeConfig.SessionServicePort)
+	if err != nil {
+		return nil, err
+	}
+	dependencies.SessionService = sessionService
+
 	return &dependencies, nil
 }
 
@@ -96,7 +109,7 @@ func InitRuntimeService(endpoint string) (runtime.RuntimeService, error) {
 }
 
 func InitImageService(endpoint string) (images.ImageManager, error) {
-	klog.V(3).InfoS("Connecting to runtime service", "endpoint", endpoint)
+	klog.InfoS("Connecting to runtime service", "endpoint", endpoint)
 	remoteService, err := remote.NewRemoteImageService(endpoint, runtime.DefaultTimeout)
 	if err != nil {
 		klog.ErrorS(err, "Connect remote runtime failed", "address", endpoint)

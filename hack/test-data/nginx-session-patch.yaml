@@ -1,0 +1,6 @@
+spec:
+  applicationNamespacedName: nginx
+  sessionData: my-nginx1-session-data
+  killInstanceWhenSessionClosed: true
+  openTimeoutSeconds: 30
+  closeGracePeriodSeconds: 30
