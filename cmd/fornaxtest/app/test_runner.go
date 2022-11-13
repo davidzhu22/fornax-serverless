@@ -29,16 +29,35 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/klog/v2"
 
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/apimachinery/pkg/util/rand"
+
+	// "k8s.io/apimachinery/pkg/util/wait"
+
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/logs"
 	"k8s.io/component-base/version/verflag"
 )
 
-func init() {
-	utilruntime.Must(logs.AddFeatureGates(utilfeature.DefaultMutableFeatureGate))
+var (
+	delevents = int32(0)
+	addevents = int32(0)
+	updevents = int32(0)
+)
+
+var (
+	allTestApps         = TestApplicationArray{}
+	appMap              = TestAppMap{}
+	appMapLock          = sync.Mutex{}
+	allTestSessions     = TestSessionArray{}
+	appSessionMap       = TestSessionMap{}
+	appSessionMapLock   = sync.Mutex{}
+	testSessionCounters = []*TestSessionCounter{}
+)
+
+type TestSessionCounter struct {
+	numOfSessions int
+	st            int64
+	et            int64
 }
 
 const (
@@ -93,35 +112,69 @@ func NewCommand() *cobra.Command {
 }
 
 func Run(ctx context.Context, testConfig config.TestConfiguration) {
-	klog.InfoS("Golang settings", "GOGC", os.Getenv("GOGC"), "GOMAXPROCS", os.Getenv("GOMAXPROCS"), "GOTRACEBACK", os.Getenv("GOTRACEBACK"))
-
-	RunTest := func() {
-		wg := sync.WaitGroup{}
-		for i := 0; i < testConfig.NumOfApps; i++ {
-			wg.Add(1)
-			namespace := fmt.Sprintf("game%d", i)
-			appName := fmt.Sprintf("echoserver%d", i)
-			go func() {
-				switch testConfig.TestCase {
-				case config.AppFullCycleTest:
-					runAppFullCycleTest(namespace, appName, testConfig)
-				case config.SessionFullCycleTest:
-					runSessionFullSycleTest(namespace, appName, testConfig)
-				case config.AppCreateDeleteTest:
-				case config.AppCreateTest:
-				}
-				wg.Done()
-			}()
-		}
-		wg.Wait()
-	}
-
 	logs.InitLogs()
 
-	if testConfig.RunOnce {
-		RunTest()
-		os.Exit(0)
-	} else {
-		wait.Until(RunTest, 2*time.Second, ctx.Done())
+	ns := "fornaxtest"
+	initApplicationInformer(ctx, ns)
+	initApplicationSessionInformer(ctx, ns)
+
+	done := false
+	st := time.Now().UnixMilli()
+	if testConfig.TestCase == config.SessionFullCycleTest || testConfig.TestCase == config.SessionCreateTest {
+		go func() {
+			for {
+				time.Sleep(1 * time.Second)
+				et := time.Now().UnixMilli()
+				testSessionCounters = append(testSessionCounters, &TestSessionCounter{
+					numOfSessions: len(allTestSessions),
+					st:            st,
+					et:            et,
+				})
+				klog.Infof("Num of session created, %d", len(allTestSessions))
+				if done {
+					break
+				}
+			}
+		}()
 	}
+
+	RunTest := func(namespace, appName, randSessionPrefix string) {
+		klog.Infof("--------App %s Test begin--------\n", appName)
+		for i := 1; i <= testConfig.NumOfTestCycle; i++ {
+			cycleName := fmt.Sprintf("%s-c-%d", randSessionPrefix, i)
+			switch testConfig.TestCase {
+			case config.AppFullCycleTest:
+				runAppFullCycleTest(cycleName, namespace, appName, testConfig)
+			case config.SessionFullCycleTest:
+				runSessionFullCycleTest(cycleName, namespace, appName, testConfig)
+			case config.SessionCreateTest:
+				createSessionTest(cycleName, namespace, appName, testConfig)
+			}
+		}
+		klog.Infof("--------App %s Test end----------\n\n", appName)
+	}
+
+	// start to test all apps
+	randSessionName := rand.String(16)
+	wgAppTest := sync.WaitGroup{}
+	for i := 0; i < testConfig.NumOfApps; i++ {
+		wgAppTest.Add(1)
+		appName := fmt.Sprintf("%s%d", testConfig.AppNamePrefix, i)
+		klog.Infof("Run test app %s", appName)
+		go func(app string) {
+			RunTest(ns, app, randSessionName)
+			wgAppTest.Done()
+		}(appName)
+	}
+	wgAppTest.Wait()
+	done = true
+
+	et := time.Now().UnixMilli()
+	klog.Infof("--------Test summary ----------\n")
+	fmt.Printf("Received %d add watch events\n", addevents)
+	fmt.Printf("Received %d upd watch events\n", updevents)
+	fmt.Printf("Received %d del watch events\n", delevents)
+	summaryAppTestResult(allTestApps, st, et)
+	summarySessionTestResult(allTestSessions, st, et)
+	os.Exit(0)
 }

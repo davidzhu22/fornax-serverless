@@ -23,15 +23,18 @@ import (
 	fornaxv1 "centaurusinfra.io/fornax-serverless/pkg/apis/core/v1"
 	"centaurusinfra.io/fornax-serverless/pkg/collection"
 	"centaurusinfra.io/fornax-serverless/pkg/fornaxcore/grpc"
+	fornaxstore "centaurusinfra.io/fornax-serverless/pkg/store"
+
 	v1 "k8s.io/api/core/v1"
 )
 
 type PodManagerInterface interface {
 	AddPod(nodeId string, pod *v1.Pod) (*v1.Pod, error)
 	DeletePod(nodeId string, pod *v1.Pod) (*v1.Pod, error)
-	TerminatePod(pod *v1.Pod) error
-	FindPod(identifier string) *v1.Pod
-	Watch(watcher chan<- interface{})
+	TerminatePod(podName string) error
+	HibernatePod(podName string) error
+	FindPod(podName string) *v1.Pod
+	Watch(watcher chan<- *PodEvent)
 }
 
 type NodeWorkingState string
@@ -52,7 +55,7 @@ type FornaxNodeWithState struct {
 }
 
 type NodeManagerInterface interface {
-	NodeInfoProvider
+	NodeInfoProviderInterface
 	UpdateSessionState(nodeId string, session *fornaxv1.ApplicationSession) error
 	UpdatePodState(nodeId string, pod *v1.Pod, sessions []*fornaxv1.ApplicationSession) error
 	SyncNodePodStates(nodeId string, podStates []*grpc.PodState)
@@ -67,31 +70,30 @@ type NodeManagerInterface interface {
 // and update session status using session state reported back from node agent
 type SessionManagerInterface interface {
 	UpdateSessionStatus(session *fornaxv1.ApplicationSession, newStatus *fornaxv1.ApplicationSessionStatus) error
-	UpdateSessionFinalizer(session *fornaxv1.ApplicationSession) error
-	UpdateSessionStatusFromNode(nodeId string, pod *v1.Pod, sessions []*fornaxv1.ApplicationSession)
+	OnSessionStatusFromNode(nodeId string, pod *v1.Pod, session *fornaxv1.ApplicationSession) error
 	OpenSession(pod *v1.Pod, session *fornaxv1.ApplicationSession) error
 	CloseSession(pod *v1.Pod, session *fornaxv1.ApplicationSession) error
-	Watch(watcher chan<- interface{})
+	Watch(ctx context.Context) (<-chan fornaxstore.WatchEventWithOldObj, error)
 }
 
-// NodeInfoProvider provide method to watch and list NodeEvent
-type NodeInfoProvider interface {
+// NodeInfoProviderInterface provide method to watch and list NodeEvent
+type NodeInfoProviderInterface interface {
 	List() []*NodeEvent
-	Watch(watcher chan<- interface{})
+	Watch(watcher chan<- *NodeEvent)
 }
 
-// PodInfoProvider provide method to watch and list PodEvent
-type PodInfoProvider interface {
-	Watch(watcher chan<- interface{})
+// PodInfoProviderInterface provide method to watch and list PodEvent
+type PodInfoProviderInterface interface {
+	Watch(watcher chan<- *PodEvent)
 }
 
 // NodeMonitorInterface handle message sent by node agent
 type NodeMonitorInterface interface {
 	OnNodeConnect(nodeId string) error
 	OnNodeDisconnect(nodeId string) error
-	OnRegistry(ctx context.Context, message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
-	OnNodeReady(ctx context.Context, message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
-	OnNodeStateUpdate(ctx context.Context, message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
-	OnPodStateUpdate(ctx context.Context, message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
-	OnSessionUpdate(ctx context.Context, message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
+	OnRegistry(message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
+	OnNodeReady(message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
+	OnNodeStateUpdate(message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
+	OnPodStateUpdate(message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
+	OnSessionUpdate(message *grpc.FornaxCoreMessage) (*grpc.FornaxCoreMessage, error)
 }

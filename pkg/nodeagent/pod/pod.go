@@ -191,7 +191,7 @@ func (a *PodActor) TerminatePod(gracefulPeriod time.Duration, force bool) (bool,
 
 	allContainerTerminated := true
 	for n, c := range pod.Containers {
-		if podcontainer.ContainerExit(c.ContainerStatus) || force {
+		if runtime.ContainerExit(c.ContainerStatus) || force {
 			klog.InfoS("Terminating stopped container", "pod", types.UniquePodName(pod), "container", n)
 			if err := a.terminateContainer(c); err == nil {
 			} else {
@@ -238,7 +238,6 @@ func (a *PodActor) CleanupPod() (err error) {
 		return err
 	}
 
-	// Remove log directories for the pod
 	klog.InfoS("Remove Pod log dirs", "pod", types.UniquePodName(a.pod))
 	if err := CleanupPodLogDir(a.nodeConfig.PodLogRootPath, pod); err != nil {
 		klog.ErrorS(err, "Unable to remove pod log directories for pod", "pod", types.UniquePodName(a.pod))

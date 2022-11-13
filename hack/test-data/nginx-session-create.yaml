@@ -5,7 +5,7 @@ metadata:
   labels:
     application: nginx
 spec:
-  applicationName: game1/nginx
+  applicationName: nginx
   sessionData: my-nginx1-session-data
   openTimeoutSeconds: 30
   closeGracePeriodSeconds: 30

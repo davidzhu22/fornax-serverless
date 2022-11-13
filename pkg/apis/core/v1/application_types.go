@@ -58,6 +58,9 @@ type ApplicationSpec struct {
 	// runtime image and resource requirement of a application container
 	Containers []corev1.Container `json:"containers,omitempty"`
 
+	// container will use grpc session service on node agent to start application session
+	UsingNodeSessionService bool `json:"usingNodeSessionService,omitempty"`
+
 	// Data contains the configuration data.
 	// Each key must consist of alphanumeric characters, '-', '_' or '.'.
 	// Values with non-UTF-8 base64 string of byte sequences
@@ -175,7 +178,7 @@ type ApplicationStatus struct {
 
 	// Total number of instances which have been started by node
 	// +optional
-	RunningInstances int32 `json:"runningInstances,omitempty"`
+	AllocatedInstances int32 `json:"allocatedInstances,omitempty"`
 
 	// Total number of pods which do not have session on it
 	// +optional
@@ -215,12 +218,14 @@ func (in *Application) NewList() runtime.Object {
 	return &ApplicationList{}
 }
 
+var ApplicationGrv = schema.GroupVersionResource{
+	Group:    "core.fornax-serverless.centaurusinfra.io",
+	Version:  "v1",
+	Resource: "applications",
+}
+
 func (in *Application) GetGroupVersionResource() schema.GroupVersionResource {
-	return schema.GroupVersionResource{
-		Group:    "core.fornax-serverless.centaurusinfra.io",
-		Version:  "v1",
-		Resource: "applications",
-	}
+	return ApplicationGrv
 }
 
 func (in *Application) IsStorageVersion() bool {

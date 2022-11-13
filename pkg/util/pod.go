@@ -19,7 +19,10 @@ package util
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
+
+	fornaxv1 "centaurusinfra.io/fornax-serverless/pkg/apis/core/v1"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -167,29 +170,23 @@ func GetPodResourceList(v1pod *v1.Pod) *v1.ResourceList {
 	return &resourceList
 }
 
-func MergePod(oldPod, newPod *v1.Pod) {
-	oldPod.Status = *newPod.Status.DeepCopy()
-	oldPod.ResourceVersion = newPod.ResourceVersion
+func MergePod(fromPod, toPod *v1.Pod) {
+	MergeObjectMeta(&fromPod.ObjectMeta, &toPod.ObjectMeta)
 
-	for k, v := range newPod.GetLabels() {
-		oldPod.Labels[k] = v
+	if PodIsTerminated(fromPod) {
+		if toPod.DeletionTimestamp == nil {
+			if fromPod.DeletionTimestamp != nil {
+				toPod.DeletionTimestamp = fromPod.DeletionTimestamp.DeepCopy()
+			} else {
+				toPod.DeletionTimestamp = NewCurrentMetaTime()
+			}
+		}
 	}
-
-	for k, v := range newPod.GetAnnotations() {
-		oldPod.Annotations[k] = v
-	}
-
-	if newPod.DeletionTimestamp != nil && oldPod.DeletionTimestamp == nil {
-		oldPod.DeletionTimestamp = newPod.DeletionTimestamp
-	}
-
-	if newPod.DeletionGracePeriodSeconds != nil && oldPod.DeletionGracePeriodSeconds == nil {
-		oldPod.DeletionGracePeriodSeconds = newPod.DeletionGracePeriodSeconds
-	}
+	toPod.Status = *fromPod.Status.DeepCopy()
 
 	// pod spec could be modified by NodeAgent, especially container port mapping
-	if !reflect.DeepEqual(oldPod.Spec, newPod.Spec) {
-		oldPod.Spec = newPod.Spec
+	if !reflect.DeepEqual(toPod.Spec, fromPod.Spec) {
+		toPod.Spec = fromPod.Spec
 	}
 }
 
@@ -217,4 +214,32 @@ func PodInGracePeriod(pod *v1.Pod) bool {
 	graceSeconds := pod.GetDeletionGracePeriodSeconds()
 	deleteTimeStamp := pod.GetDeletionTimestamp()
 	return graceSeconds != nil && deleteTimeStamp != nil && deleteTimeStamp.Add((time.Duration(*graceSeconds) * time.Second)).After(time.Now())
+}
+
+func PodHasSession(pod *v1.Pod) (string, bool) {
+	if label, found := pod.GetLabels()[fornaxv1.LabelFornaxCoreApplicationSession]; found {
+		return label, true
+	}
+	return "", false
+}
+
+func PodHasHibernateAnnotation(pod *v1.Pod) bool {
+	if _, found := pod.GetAnnotations()[fornaxv1.AnnotationFornaxCoreHibernatePod]; found {
+		return true
+	}
+	return false
+}
+
+func PodHasSessionServiceAnnotation(pod *v1.Pod) bool {
+	if _, found := pod.GetAnnotations()[fornaxv1.AnnotationFornaxCoreSessionServicePod]; found {
+		return true
+	}
+	return false
+}
+
+func GetPodSessionNames(pod *v1.Pod) []string {
+	if label, found := pod.GetLabels()[fornaxv1.LabelFornaxCoreApplicationSession]; found {
+		return strings.Split(label, ",")
+	}
+	return []string{}
 }

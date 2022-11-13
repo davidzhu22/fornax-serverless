@@ -26,9 +26,9 @@ import (
 	resourcemanager "centaurusinfra.io/fornax-serverless/pkg/nodeagent/resource"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/runtime"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/sessionservice"
-	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/sessionservice/server"
-	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/store/factory"
-	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/store/sqlite"
+	sessionserver "centaurusinfra.io/fornax-serverless/pkg/nodeagent/sessionservice/grpc"
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/store"
+	"centaurusinfra.io/fornax-serverless/pkg/store/storage/sqlite"
 	v1 "k8s.io/api/core/v1"
 	criv1 "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/klog/v2"
@@ -38,30 +38,30 @@ import (
 )
 
 type Dependencies struct {
-	NetworkProvider   network.NetworkAddressProvider
-	CAdvisor          cadvisor.CAdvisorInfoProvider
-	CRIRuntimeService runtime.RuntimeService
-	QosManager        qos.QoSManager
-	ImageManager      images.ImageManager
-	MemoryManager     resourcemanager.MemoryManager
-	CPUManager        resourcemanager.CPUManager
-	VolumeManager     resourcemanager.VolumeManager
-	NodeStore         *factory.NodeStore
-	PodStore          *factory.PodStore
-	SessionService    sessionservice.SessionService
+	NetworkProvider network.NetworkAddressProvider
+	CAdvisor        cadvisor.CAdvisorInfoProvider
+	RuntimeService  runtime.RuntimeService
+	QosManager      qos.QoSManager
+	ImageManager    images.ImageManager
+	MemoryManager   resourcemanager.MemoryManager
+	CPUManager      resourcemanager.CPUManager
+	VolumeManager   resourcemanager.VolumeManager
+	NodeStore       *store.NodeStore
+	PodStore        *store.PodStore
+	SessionService  sessionservice.SessionService
 }
 
-func InitBasicDependencies(nodeConfig config.NodeConfiguration) (*Dependencies, error) {
+func InitBasicDependencies(ctx context.Context, nodeConfig config.NodeConfiguration) (*Dependencies, error) {
 	dependencies := Dependencies{
-		NetworkProvider:   nil,
-		CAdvisor:          nil,
-		CRIRuntimeService: nil,
-		QosManager:        nil,
-		MemoryManager:     resourcemanager.MemoryManager{},
-		CPUManager:        resourcemanager.CPUManager{},
-		VolumeManager:     resourcemanager.VolumeManager{},
-		PodStore:          &factory.PodStore{},
-		NodeStore:         &factory.NodeStore{},
+		NetworkProvider: nil,
+		CAdvisor:        nil,
+		RuntimeService:  nil,
+		QosManager:      nil,
+		MemoryManager:   resourcemanager.MemoryManager{},
+		CPUManager:      resourcemanager.CPUManager{},
+		VolumeManager:   resourcemanager.VolumeManager{},
+		PodStore:        &store.PodStore{},
+		NodeStore:       &store.NodeStore{},
 	}
 
 	// SqliteStore
@@ -76,26 +76,26 @@ func InitBasicDependencies(nodeConfig config.NodeConfiguration) (*Dependencies, 
 		return nil, err
 	}
 
-	// networkProvider
+	// NetworkProvider
 	dependencies.NetworkProvider = InitNetworkProvider(nodeConfig.Hostname)
 
-	// CRIRuntime
-	dependencies.CRIRuntimeService, err = InitRuntimeService(nodeConfig.ContainerRuntimeEndpoint)
+	// Runtime
+	dependencies.RuntimeService, err = InitRuntimeService(nodeConfig.ContainerRuntimeEndpoint)
 	if err != nil {
 		klog.ErrorS(err, "failed to init container runtime client")
 		return nil, err
 	}
 
-	// cAdvisor
-	dependencies.CAdvisor, err = InitCAdvisor(cadvisor.DefaultCAdvisorConfig(nodeConfig), dependencies.CRIRuntimeService)
+	// CAdvisor
+	dependencies.CAdvisor, err = InitCAdvisor(cadvisor.DefaultCAdvisorConfig(nodeConfig), dependencies.RuntimeService)
 	if err != nil {
 		klog.ErrorS(err, "failed to init cadvisor")
 		return nil, err
 	}
 
-	// sessionService := sessionservice.NewFakeSessionService()
-	sessionService := server.NewSessionService()
-	err = sessionService.Run(context.Background(), nodeConfig.SessionServicePort)
+	// SessionService
+	sessionService := sessionserver.NewSessionService()
+	err = sessionService.Run(ctx, nodeConfig.SessionServicePort)
 	if err != nil {
 		return nil, err
 	}
@@ -125,14 +125,14 @@ func InitNetworkProvider(hostname string) network.NetworkAddressProvider {
 	}
 }
 
-func InitPodStore(databaseURL string) (*factory.PodStore, error) {
-	return factory.NewPodSqliteStore(&sqlite.SQLiteStoreOptions{
+func InitPodStore(databaseURL string) (*store.PodStore, error) {
+	return store.NewPodSqliteStore(&sqlite.SQLiteStoreOptions{
 		ConnUrl: databaseURL,
 	})
 }
 
-func InitNodeStore(databaseURL string) (*factory.NodeStore, error) {
-	return factory.NewNodeSqliteStore(&sqlite.SQLiteStoreOptions{
+func InitNodeStore(databaseURL string) (*store.NodeStore, error) {
+	return store.NewNodeSqliteStore(&sqlite.SQLiteStoreOptions{
 		ConnUrl: databaseURL,
 	})
 }
@@ -168,8 +168,8 @@ func (n *Dependencies) Complete(node *v1.Node, nodeConfig config.NodeConfigurati
 	}
 
 	// CRIRuntime
-	if n.CRIRuntimeService == nil {
-		n.CRIRuntimeService, err = InitRuntimeService(nodeConfig.ContainerRuntimeEndpoint)
+	if n.RuntimeService == nil {
+		n.RuntimeService, err = InitRuntimeService(nodeConfig.ContainerRuntimeEndpoint)
 		if err != nil {
 			klog.ErrorS(err, "Failed to init runtime service")
 			return err
@@ -187,7 +187,7 @@ func (n *Dependencies) Complete(node *v1.Node, nodeConfig config.NodeConfigurati
 
 	// cAdvisor
 	if n.CAdvisor == nil {
-		n.CAdvisor, err = InitCAdvisor(cadvisor.DefaultCAdvisorConfig(nodeConfig), n.CRIRuntimeService)
+		n.CAdvisor, err = InitCAdvisor(cadvisor.DefaultCAdvisorConfig(nodeConfig), n.RuntimeService)
 		if err != nil {
 			klog.ErrorS(err, "Failed to init cadvisor info provider")
 			return err

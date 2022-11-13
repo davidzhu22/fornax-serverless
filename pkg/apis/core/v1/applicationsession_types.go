@@ -88,7 +88,7 @@ const (
 	SessionStatusAvailable SessionStatus = "Available"
 
 	// session is started on instance, session is being used
-	SessionStatusOccupied SessionStatus = "Occupied"
+	SessionStatusInUse SessionStatus = "InUse"
 
 	// session is closing on instance, wait for session client exit
 	SessionStatusClosing SessionStatus = "Closing"
@@ -159,12 +159,14 @@ func (in *ApplicationSession) NewList() runtime.Object {
 	return &ApplicationSessionList{}
 }
 
+var ApplicationSessionGrv = schema.GroupVersionResource{
+	Group:    "core.fornax-serverless.centaurusinfra.io",
+	Version:  "v1",
+	Resource: "applicationsessions",
+}
+
 func (in *ApplicationSession) GetGroupVersionResource() schema.GroupVersionResource {
-	return schema.GroupVersionResource{
-		Group:    "core.fornax-serverless.centaurusinfra.io",
-		Version:  "v1",
-		Resource: "applicationsessions",
-	}
+	return ApplicationSessionGrv
 }
 
 func (in *ApplicationSession) IsStorageVersion() bool {

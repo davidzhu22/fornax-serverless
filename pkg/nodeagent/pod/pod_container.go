@@ -23,7 +23,6 @@ import (
 	criv1 "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/klog/v2"
 
-	podcontainer "centaurusinfra.io/fornax-serverless/pkg/nodeagent/pod/container"
 	cruntime "centaurusinfra.io/fornax-serverless/pkg/nodeagent/runtime"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
 )
@@ -69,7 +68,7 @@ func (a *PodActor) createContainer(podSandboxConfig *criv1.PodSandboxConfig, con
 
 	// call runtime to create the container
 	klog.InfoS("Call runtime to create container", "pod", types.UniquePodName(a.pod), "container", containerSpec.Name)
-	runtimeContainer, err := a.dependencies.CRIRuntimeService.CreateContainer(a.pod.RuntimePod.Sandbox.Id, containerConfig, podSandboxConfig)
+	runtimeContainer, err := a.dependencies.RuntimeService.CreateContainer(a.pod.RuntimePod.Sandbox.Id, containerConfig, podSandboxConfig)
 	if err != nil {
 		klog.ErrorS(err, "Failed to call runtime to create container", "pod", types.UniquePodName(a.pod), "container", containerSpec.Name)
 		return nil, ErrCreateContainer
@@ -169,12 +168,7 @@ func (a *PodActor) terminateContainer(container *types.FornaxContainer) error {
 		"ContainerName", container.ContainerSpec.Name,
 	)
 
-	// 1/ verify container is stopped in runtime
-	if !podcontainer.ContainerExit(container.ContainerStatus) {
-		return fmt.Errorf("container %s is not stopped yet", container.ContainerSpec.Name)
-	}
-
-	err := a.dependencies.CRIRuntimeService.TerminateContainer(container.RuntimeContainer.Id)
+	err := a.dependencies.RuntimeService.TerminateContainer(container.RuntimeContainer.Id)
 	if err != nil {
 		klog.ErrorS(err, "stop pod container failed",
 			"Pod", types.UniquePodName(pod),

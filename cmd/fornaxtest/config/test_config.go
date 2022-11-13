@@ -20,12 +20,14 @@ import (
 )
 
 type TestConfiguration struct {
-	TestCase            string
-	RunOnce             bool
-	NumOfApps           int
-	NumOfInitPodsPerApp int
-	BurstOfPods         int
-	NumOfSessionPerApp  int
+	TestCase             string
+	NumOfTestCycle       int
+	NumOfApps            int
+	NumOfBurstPodsPerApp int
+	NumOfInitPodsPerApp  int
+	NumOfSessionPerApp   int
+	AppNamePrefix        string
+	NoNodeSessionService bool
 }
 
 type TestCase string
@@ -33,26 +35,29 @@ type TestCase string
 const (
 	AppFullCycleTest     = "app_full_cycle"     // create app, create session, and delete app
 	SessionFullCycleTest = "session_full_cycle" // create app, continously create session and delete session, delete app at last
-	AppCreateTest        = "app_create"         // create app only
-	AppCreateDeleteTest  = "app_create_delete"  // create app and delete app
+	SessionCreateTest    = "session_create"     // create session only
 )
 
 func AddConfigFlags(flagSet *pflag.FlagSet, simuConfig *TestConfiguration) {
-	flagSet.StringVar(&simuConfig.TestCase, "test-case", simuConfig.TestCase, "which test is running, app_full_cycle,session_full_cycle")
+	flagSet.StringVar(&simuConfig.TestCase, "test-case", simuConfig.TestCase, "which test is running, app_full_cycle,session_full_cycle,session_create")
 	flagSet.IntVar(&simuConfig.NumOfApps, "num-of-app", simuConfig.NumOfApps, "how many applications are simulated")
-	flagSet.IntVar(&simuConfig.NumOfInitPodsPerApp, "num-of-init-pod-per-app", simuConfig.NumOfInitPodsPerApp, "how many applications pods are precreated when create app")
-	flagSet.IntVar(&simuConfig.BurstOfPods, "burst-of-app-pods", simuConfig.BurstOfPods, "maximum pods are allowed in one batch for a application")
-	flagSet.BoolVar(&simuConfig.RunOnce, "run-once", simuConfig.RunOnce, "run one test and exit")
-	flagSet.IntVar(&simuConfig.NumOfSessionPerApp, "num-of-session-per-app", simuConfig.NumOfSessionPerApp, "how many application sessions are created for a application")
+	flagSet.IntVar(&simuConfig.NumOfInitPodsPerApp, "num-of-init-pod-per-app", simuConfig.NumOfInitPodsPerApp, "how many applications pods are precreated for a app")
+	flagSet.IntVar(&simuConfig.NumOfBurstPodsPerApp, "num-of-burst-pod-per-app", simuConfig.NumOfBurstPodsPerApp, "how many applications pods are allow to create at same time for a app")
+	flagSet.IntVar(&simuConfig.NumOfSessionPerApp, "num-of-session-per-app", simuConfig.NumOfSessionPerApp, "how many application sessions are created for a app")
+	flagSet.IntVar(&simuConfig.NumOfTestCycle, "num-of-test-cycle", simuConfig.NumOfSessionPerApp, "how many test run before exit")
+	flagSet.StringVar(&simuConfig.AppNamePrefix, "app-name-prefix", simuConfig.AppNamePrefix, "app name prefix")
+	flagSet.BoolVar(&simuConfig.NoNodeSessionService, "no-session-service", simuConfig.NoNodeSessionService, "do not use node session service to open session if has this flag")
 }
 
 func DefaultConfiguration() *TestConfiguration {
 	return &TestConfiguration{
-		TestCase:            AppFullCycleTest,
-		NumOfApps:           1,
-		NumOfInitPodsPerApp: 0,
-		BurstOfPods:         10,
-		RunOnce:             false,
-		NumOfSessionPerApp:  1,
+		TestCase:             AppFullCycleTest,
+		NumOfApps:            1,
+		NumOfInitPodsPerApp:  0,
+		NumOfBurstPodsPerApp: 2,
+		NumOfSessionPerApp:   1,
+		NumOfTestCycle:       1,
+		AppNamePrefix:        "echo",
+		NoNodeSessionService: false,
 	}
 }

@@ -17,12 +17,16 @@ limitations under the License.
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
 	grpc_util "centaurusinfra.io/fornax-serverless/pkg/util"
 
+	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/api/services/tasks/v1"
+	"github.com/containerd/containerd/namespaces"
 	criapi "k8s.io/cri-api/pkg/apis"
 	criv1 "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/klog/v2"
@@ -30,13 +34,14 @@ import (
 )
 
 const (
-	DefaultTimeout = 5 * time.Second
+	DefaultTimeout = 10 * time.Second
 )
 
 var _ RuntimeService = &remoteRuntimeManager{}
 
 type remoteRuntimeManager struct {
-	runtimeService criapi.RuntimeService
+	runtimeService    criapi.RuntimeService
+	containerdService *containerd.Client
 }
 
 // GetPodSandbox implements RuntimeService
@@ -192,10 +197,10 @@ func (r *remoteRuntimeManager) GetPodStatus(podSandboxID string, containerIDs []
 	}
 
 	for _, v := range containerIDs {
-		containerStatus, errr := r.GetContainerStatus(v)
-		if errr != nil {
+		containerStatus, err := r.GetContainerStatus(v)
+		if err != nil {
 			if !grpc_util.NotFoundError(err) {
-				return nil, errr
+				return nil, err
 			}
 		} else {
 			podStatus.ContainerStatuses[v] = containerStatus.RuntimeStatus
@@ -353,6 +358,36 @@ func (r *remoteRuntimeManager) TerminatePod(podSandboxID string, containerIDs []
 	return nil
 }
 
+var (
+	backgroundCtx          = context.Background()
+	k8sCriNamespaceContext = namespaces.WithNamespace(backgroundCtx, "k8s.io")
+)
+
+// HibernateContainer implements RuntimeService using containerd client to hibernate
+func (r *remoteRuntimeManager) HibernateContainer(containerID string) error {
+	klog.InfoS("Hibernate Container", "ContainerID", containerID)
+	// t, err := c.Task(context.Background(), cio.NullIO(""))
+	_, err := r.containerdService.TaskService().Kill(k8sCriNamespaceContext, &tasks.KillRequest{
+		ContainerID: containerID,
+		ExecID:      "",
+		Signal:      19,
+		All:         false,
+	})
+	return err
+}
+
+// WakeupContainer implements RuntimeService
+func (r *remoteRuntimeManager) WakeupContainer(containerID string) error {
+	klog.InfoS("Wakeup Container", "ContainerID", containerID)
+	_, err := r.containerdService.TaskService().Kill(k8sCriNamespaceContext, &tasks.KillRequest{
+		ContainerID: containerID,
+		ExecID:      "",
+		Signal:      18,
+		All:         false,
+	})
+	return err
+}
+
 func (r *remoteRuntimeManager) getPodSandboxStatus(podSandboxID string) (*criv1.PodSandboxStatus, error) {
 	response, err := r.runtimeService.PodSandboxStatus(podSandboxID, false)
 	if err != nil {
@@ -392,12 +427,18 @@ func NewRemoteRuntimeService(endpoint string, connectionTimeout time.Duration) (
 	klog.InfoS("Connecting to runtime service", "endpoint", endpoint)
 	remoteService, err := remote.NewRemoteRuntimeService(endpoint, connectionTimeout)
 	if err != nil {
-		klog.ErrorS(err, "Failed to connect remote runtime", "endpoint", endpoint)
+		klog.ErrorS(err, "Failed to connect cri service", "endpoint", endpoint)
 		return nil, err
 	}
 
+	containerdClient, err := containerd.New(endpoint)
+	if err != nil {
+		klog.ErrorS(err, "Failed to connect containerd service", "endpoint", endpoint)
+		return nil, err
+	}
 	service := &remoteRuntimeManager{
-		runtimeService: remoteService,
+		runtimeService:    remoteService,
+		containerdService: containerdClient,
 	}
 
 	return service, nil

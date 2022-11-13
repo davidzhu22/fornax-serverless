@@ -9,7 +9,7 @@ If you have a brand new machine, you may need to install following component to 
 ```script
 sudo apt-get update
 sudo apt install build-essential
-sudo snap install curl  # version 7.81.0
+sudo apt install curl
 sudo apt-get install vim
 sudo apt install git
 ```
@@ -191,7 +191,7 @@ debug: true
 pull-image-on-create: false
 ```
 
-notes: Note: The default endpoints are now deprecated and the runtime endpoint should always be set instead.
+Notes: The default endpoints are now deprecated and the runtime endpoint should always be set instead.
 
 #### 2.5.2 Check Containerd State
 ```script
@@ -208,7 +208,7 @@ sudo journalctl -fu containerd
 
 #### 2.6.1 Install Golang (See 1.2.1)
 #### 2.6.2 Compile Source Code (See 1.2.2)
-#### 2.6.2 Start Node Agent (See [get_start.md](https://github.com/CentaurusInfra/fornax-serverless/edit/main/doc/get_start.md)
+#### 2.6.2 Start Node Agent. See [get_start.md](https://github.com/CentaurusInfra/fornax-serverless/edit/main/doc/get_start.md)
 
 
 ## 3. Play Fornax Serverless
@@ -294,7 +294,7 @@ kubectl delete applicationsession --kubeconfig kubeconfig --namespace game1 ngin
 kubectl --kubeconfig kubeconfig delete applicationsession --namespace game1 nginx-session2
 ```
 ```sh
-kubectl delete application --kubeconfig kubeconfig --namespace game1 echoserver1
+kubectl delete application --kubeconfig kubeconfig --namespace fornaxtest echoserver0
 ```
 
 4. Verify session is accessable using access point
@@ -327,5 +327,15 @@ version = 2
 
 4. Test command
 ```sh
-./bin/fornaxtest --test-case session_full_cycle --num-of-session-per-app 1 --num-of-init-pod-per-app 0 --burst-of-app-pods 10 --run-once
+./bin/fornaxtest --test-case app_full_cycle --num-of-session-per-app 1 --num-of-init-pod-per-app 1 --num-of-app 1 --num-of-test-cycle 1
+```
+
+```sh
+./bin/fornaxtest --test-case app_full_cycle --num-of-session-per-app 10 --num-of-init-pod-per-app 10 --num-of-app 1 --num-of-test-cycle 5
+./bin/fornaxtest --test-case app_full_cycle --num-of-session-per-app 50 --num-of-init-pod-per-app 50 --num-of-app 1 --num-of-test-cycle 5
+```
+
+5. Tmux
+```sh
+sudo apt  install tmux
 ```

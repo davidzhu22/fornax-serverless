@@ -72,7 +72,7 @@ func (pm *HostPortRange) deallocateHostPort(containerPorts []*v1.ContainerPort) 
 
 //allocateHostPort find not used host port range and set unique host port for each container port from this range,
 // and mark range is used, if it can not allocate host port for all containter port, it rollback and return InSufficientHostPortError
-func (pm *HostPortRange) allocateHostPort(node *v1.Node, containerPorts []*v1.ContainerPort) error {
+func (pm *HostPortRange) allocateHostPort(containerPorts []*v1.ContainerPort) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	i := 0
@@ -90,7 +90,6 @@ func (pm *HostPortRange) allocateHostPort(node *v1.Node, containerPorts []*v1.Co
 			for j := 0; j < int(slot.rangeSize) && i < len(containerPorts); j++ {
 				port := containerPorts[i]
 				port.HostPort = slot.nextPortNum
-				port.HostIP = node.Status.Addresses[0].Address
 				slot.nextPortNum += 1
 				slot.allocatedPorts += 1
 				i += 1
@@ -152,7 +151,7 @@ type nodePortManager struct {
 
 // AllocatePodPortMapping find a not used host port range slot to a pod and assign host port number from this range
 // to each container port to make sure host port number is unique on a node to avoid conflict between pods
-func (npm *nodePortManager) AllocatePodPortMapping(node *v1.Node, pod *v1.Pod) error {
+func (npm *nodePortManager) AllocatePodPortMapping(nodeIp string, pod *v1.Pod) error {
 	containerPorts := []*v1.ContainerPort{}
 	for _, cont := range pod.Spec.Containers {
 		for _, port := range cont.Ports {
@@ -160,26 +159,26 @@ func (npm *nodePortManager) AllocatePodPortMapping(node *v1.Node, pod *v1.Pod) e
 		}
 	}
 
-	err := npm.portRange.allocateHostPort(node, containerPorts)
+	err := npm.portRange.allocateHostPort(containerPorts)
 	if err != nil {
 		return err
 	}
 	conts := []v1.Container{}
-	for _, v := range pod.Spec.Containers {
-		cont := v.DeepCopy()
+	for _, cont := range pod.Spec.Containers {
+		updatedContSpec := cont.DeepCopy()
 		ports := []v1.ContainerPort{}
-		for _, v := range cont.Ports {
-			port := v.DeepCopy()
+		for _, contPort := range updatedContSpec.Ports {
+			port := contPort.DeepCopy()
 			for _, v := range containerPorts {
 				if v.ContainerPort == port.ContainerPort {
 					port.HostPort = v.HostPort
-					port.HostIP = v.HostIP
+					port.HostIP = nodeIp
 				}
 			}
 			ports = append(ports, *port)
 		}
-		cont.Ports = ports
-		conts = append(conts, *cont)
+		updatedContSpec.Ports = ports
+		conts = append(conts, *updatedContSpec)
 	}
 	pod.Spec.Containers = conts
 
@@ -188,7 +187,7 @@ func (npm *nodePortManager) AllocatePodPortMapping(node *v1.Node, pod *v1.Pod) e
 
 // DeallocatePodPortMapping check host port number of container ports of pod, and find allocated slot,
 // and reset slot for allocation for other pods
-func (npm *nodePortManager) DeallocatePodPortMapping(node *v1.Node, pod *v1.Pod) {
+func (npm *nodePortManager) DeallocatePodPortMapping(pod *v1.Pod) {
 	containerPorts := []*v1.ContainerPort{}
 	for _, cont := range pod.Spec.Containers {
 		for _, port := range cont.Ports {
@@ -204,7 +203,7 @@ func (npm *nodePortManager) DeallocatePodPortMapping(node *v1.Node, pod *v1.Pod)
 // initNodePortRangeSlot fill node port range usage via a list of existing pods reported on Node,
 // this method is called before allocate new pod on this node,
 // so node port range is initialized correctly to avoid double allocation
-func (npm *nodePortManager) initNodePortRangeSlot(node *v1.Node, pod *v1.Pod) {
+func (npm *nodePortManager) initNodePortRangeSlot(pod *v1.Pod) {
 	containerPorts := GetContainerPorts(pod)
 	npm.portRange.initRangeWithContainerPorts(containerPorts)
 	return

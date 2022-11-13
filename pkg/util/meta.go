@@ -30,6 +30,13 @@ func NewCurrentMetaTime() *metav1.Time {
 	}
 }
 
+// NewCurrentMetaTimeNormallized return a metav1.Time initilized with time.Now, truncate to second
+func NewCurrentMetaTimeNormallized() *metav1.Time {
+	return &metav1.Time{
+		Time: time.Now().Truncate(time.Second),
+	}
+}
+
 // AddFinalizer modify passed object meta and add specified finalizer into its list,
 // if there is already specified finalizer, no change
 func AddFinalizer(ometa *metav1.ObjectMeta, finalizer string) {
@@ -59,4 +66,20 @@ func RemoveFinalizer(ometa *metav1.ObjectMeta, finalizer string) {
 func Name(obj interface{}) string {
 	name, _ := cache.MetaNamespaceKeyFunc(obj)
 	return name
+}
+
+func MergeObjectMeta(fromMeta, toMeta *metav1.ObjectMeta) {
+	toMeta.ResourceVersion = fromMeta.ResourceVersion
+
+	toMeta.Labels = fromMeta.GetLabels()
+
+	toMeta.Annotations = fromMeta.GetAnnotations()
+
+	if fromMeta.DeletionTimestamp != nil && toMeta.DeletionTimestamp == nil {
+		toMeta.DeletionTimestamp = fromMeta.DeletionTimestamp
+	}
+
+	if fromMeta.DeletionGracePeriodSeconds != nil && toMeta.DeletionGracePeriodSeconds == nil {
+		toMeta.DeletionGracePeriodSeconds = fromMeta.DeletionGracePeriodSeconds
+	}
 }

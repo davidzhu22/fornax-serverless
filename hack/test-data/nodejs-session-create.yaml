@@ -1,0 +1,12 @@
+apiVersion: core.fornax-serverless.centaurusinfra.io/v1
+kind: ApplicationSession
+metadata:
+  name: nodejs-hw-session-2
+  labels:
+    application: nodejs-hw
+spec:
+  applicationName: nodejs-hw
+  sessionData: my-nginx1-session-data
+  openTimeoutSeconds: 30
+  closeGracePeriodSeconds: 30
+  killInstanceWhenSessionClosed: false

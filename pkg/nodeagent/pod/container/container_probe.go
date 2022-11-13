@@ -22,6 +22,7 @@ import (
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/runtime"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 type PodContainerProbeResult struct {
@@ -85,6 +86,7 @@ func (prober *ContainerProber) Start() {
 
 			obj, err := prober.ExecProbe()
 			if err != nil {
+				klog.ErrorS(err, "Container Prober failed", "probeType", prober.ProbeType)
 				if prober.ProbeStat.ConsecutiveSuccess > 0 {
 					prober.ProbeStat.ConsecutiveSuccess = 0
 					prober.ProbeStat.ConsecutiveFailures = 1
@@ -133,18 +135,20 @@ func (prober *ContainerProber) ExecProbe() (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ContainerExit(status) {
+		if runtime.ContainerExit(status) {
 			// do not probe anymore
 			prober.Stop()
-		} else if ContainerRunning(status) {
+		} else if runtime.ContainerRunning(status) {
 			// probe running container with less frequency
 			prober.Ticker.Reset(time.Duration(RunningContainerProbeSeconds) * time.Second)
 		}
 		return status, nil
-		// TODO
 	case LivenessProbe:
+		// TODO
 	case ReadinessProbe:
+		// TODO
 	case StartupProbe:
+		// TODO
 	default:
 	}
 	return nil, nil

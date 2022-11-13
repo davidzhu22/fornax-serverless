@@ -18,6 +18,8 @@ package node
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
@@ -28,7 +30,6 @@ import (
 	ie "centaurusinfra.io/fornax-serverless/pkg/fornaxcore/internal"
 	fornaxpod "centaurusinfra.io/fornax-serverless/pkg/fornaxcore/pod"
 	"centaurusinfra.io/fornax-serverless/pkg/util"
-	fornaxutil "centaurusinfra.io/fornax-serverless/pkg/util"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -43,8 +44,8 @@ var _ ie.NodeManagerInterface = &nodeManager{}
 
 type nodeManager struct {
 	ctx                context.Context
-	nodeUpdates        chan interface{}
-	watchers           []chan<- interface{}
+	nodeUpdates        chan *ie.NodeEvent
+	watchers           []chan<- *ie.NodeEvent
 	nodes              NodePool
 	nodeAgent          nodeagent.NodeAgentClient
 	podManager         ie.PodManagerInterface
@@ -54,24 +55,24 @@ type nodeManager struct {
 	houseKeepingTicker *time.Ticker
 }
 
-// UpdateSessionState implements NodeManager
+// UpdateSessionState implements NodeManagerInterface
 func (nm *nodeManager) UpdateSessionState(nodeIdentifier string, session *fornaxv1.ApplicationSession) error {
 	podName := session.Status.PodReference.Name
 	pod := nm.podManager.FindPod(podName)
 	if pod != nil {
-		nm.sessionManager.UpdateSessionStatusFromNode(nodeIdentifier, pod, []*fornaxv1.ApplicationSession{session})
+		nm.sessionManager.OnSessionStatusFromNode(nodeIdentifier, pod, session)
 	} else {
 		klog.InfoS("Pod does not exist in pod manager, can not update session info", "session", util.Name(session), "pod", podName)
 	}
 	return nil
 }
 
-// WatchNode implements NodeManager
-func (nm *nodeManager) Watch(watcher chan<- interface{}) {
+// Watch add a watcher, and beging to send NodeEvent to watcher
+func (nm *nodeManager) Watch(watcher chan<- *ie.NodeEvent) {
 	nm.watchers = append(nm.watchers, watcher)
 }
 
-// ListNodes return all nodes
+// List return all nodes in NodeEvent
 func (nm *nodeManager) List() []*ie.NodeEvent {
 	nodes := []*ie.NodeEvent{}
 	for _, v := range nm.nodes.list() {
@@ -85,17 +86,34 @@ func (nm *nodeManager) List() []*ie.NodeEvent {
 	return nodes
 }
 
-// UpdatePodState check node status and update single pod state
+// UpdatePodState check pod revision status and update single pod state
+// even a pod is terminated status, we still keep it in podmanager,
+// it got deleted until next time pod does not report it again in node state event
 func (nm *nodeManager) UpdatePodState(nodeId string, pod *v1.Pod, sessions []*fornaxv1.ApplicationSession) error {
+	podName := util.Name(pod)
 	if nodeWS := nm.nodes.get(nodeId); nodeWS != nil {
 		nodeWS.LastSeen = time.Now()
-		nm.handleAPodState(nodeId, nodeWS, pod.DeepCopy())
-		nm.sessionManager.UpdateSessionStatusFromNode(nodeId, pod, sessions)
+		if existingPod := nm.podManager.FindPod(podName); existingPod != nil {
+			existingPodRv, _ := strconv.Atoi(existingPod.ResourceVersion)
+			podRv, _ := strconv.Atoi(pod.ResourceVersion)
+			if existingPodRv >= podRv {
+				// we already have pod with newer version
+				return nil
+			}
+		}
+		updatedPod, err := nm.podManager.AddPod(nodeId, pod)
+		if err != nil {
+			return err
+		}
+		nodeWS.Pods.Add(podName)
+		for _, session := range sessions {
+			nm.sessionManager.OnSessionStatusFromNode(nodeId, updatedPod, session)
+		}
 	} else {
-		// TODO, node supposed to exist
+		// not supposed to happend node state is send when node register
 		klog.InfoS("Node does not exist, ask node full sync", "node", nodeId)
+		return nodeagent.NodeRevisionOutOfOrderError
 	}
-
 	return nil
 }
 
@@ -104,7 +122,7 @@ func (nm *nodeManager) SyncNodePodStates(nodeId string, podStates []*grpc.PodSta
 	var err error
 	nodeWS := nm.nodes.get(nodeId)
 	if nodeWS == nil {
-		// TODO, node supposed to exist
+		// this is a situation could not happen, just for safety check
 		return
 	}
 
@@ -112,9 +130,16 @@ func (nm *nodeManager) SyncNodePodStates(nodeId string, podStates []*grpc.PodSta
 	existingPodNames := nodeWS.Pods.GetKeys()
 	reportedPods := map[string]bool{}
 	for _, podState := range podStates {
-		podName := fornaxutil.Name(podState.GetPod())
+		podName := util.Name(podState.GetPod())
 		reportedPods[podName] = true
-		err = nm.handleAPodState(nodeId, nodeWS, podState.GetPod().DeepCopy())
+		sessions := []*fornaxv1.ApplicationSession{}
+		for _, v := range podState.GetSessionStates() {
+			session := &fornaxv1.ApplicationSession{}
+			if err := json.Unmarshal(v.SessionData, session); err == nil {
+				sessions = append(sessions, session)
+			}
+		}
+		err = nm.UpdatePodState(nodeId, podState.GetPod().DeepCopy(), sessions)
 		if err != nil {
 			klog.ErrorS(err, "Failed to update a pod state, wait for next sync", "pod", podName)
 		}
@@ -123,6 +148,8 @@ func (nm *nodeManager) SyncNodePodStates(nodeId string, podStates []*grpc.PodSta
 	// reverse lookup, find deleted pods
 	deletedPods := []string{}
 	for _, podName := range existingPodNames {
+		// could have a race condition, pod scheduler just send a pod request to node and node was reporting state before it received request
+		// need to check a grace period, creation time stamp is not good one if pod stay in pod scheduler for a while
 		if _, found := reportedPods[podName]; !found {
 			pod := nm.podManager.FindPod(podName)
 			if pod != nil {
@@ -145,18 +172,8 @@ func (nm *nodeManager) SyncNodePodStates(nodeId string, podStates []*grpc.PodSta
 	}
 }
 
-func (nm *nodeManager) handleAPodState(nodeId string, fornaxnode *ie.FornaxNodeWithState, newStatePod *v1.Pod) error {
-	podName := fornaxutil.Name(newStatePod)
-
-	// even a pod is terminated status, we still keep it in podmanager, it got deleted until next time pod does not report it again
-	_, err := nm.podManager.AddPod(nodeId, newStatePod)
-	if err != nil {
-		return err
-	}
-
-	fornaxnode.Pods.Add(podName)
-	return nil
-}
+// func (nm *nodeManager) handleAPodState(nodeId string, fornaxnode *ie.FornaxNodeWithState, pod *v1.Pod, sessions []*fornaxv1.ApplicationSession) error {
+// }
 
 // SetupNode complete node spec info provided by node agent, including
 // 1/ pod cidr
@@ -164,7 +181,7 @@ func (nm *nodeManager) handleAPodState(nodeId string, fornaxnode *ie.FornaxNodeW
 // it also return daemon pods node should initialize before taking service pods
 func (nm *nodeManager) SetupNode(nodeId string, node *v1.Node) (fornaxnode *ie.FornaxNodeWithState, err error) {
 	if nodeWS := nm.nodes.get(nodeId); nodeWS != nil {
-		fornaxutil.MergeNodeStatus(nodeWS.Node, node)
+		util.MergeNodeStatus(nodeWS.Node, node)
 
 		// reassign cidrs if control plane changed
 		cidrs := nm.nodePodCidrManager.GetCidr(node)
@@ -215,7 +232,7 @@ func (nm *nodeManager) CreateNode(nodeId string, node *v1.Node) (fornaxNode *ie.
 
 	daemons := nm.nodeDaemonManager.GetDaemons(fornaxNode)
 	fornaxNode.DaemonPods = daemons
-	nm.nodes.add(fornaxutil.Name(node), fornaxNode)
+	nm.nodes.add(util.Name(node), fornaxNode)
 	nm.nodeUpdates <- &ie.NodeEvent{
 		NodeId: nodeId,
 		Node:   fornaxNode.Node.DeepCopy(),
@@ -233,11 +250,11 @@ func (nm *nodeManager) UpdateNode(nodeId string, node *v1.Node) (*ie.FornaxNodeW
 		}
 		nodeWS.LastSeen = time.Now()
 
-		// nodeWS.State change means node probably disconnected, need to resend node event
+		// sync with node only if node state changed or revision is different
 		if oldNodeWSState == nodeWS.State && node.ResourceVersion == nodeWS.Node.ResourceVersion {
 			return nodeWS, nil
 		}
-		fornaxutil.MergeNodeStatus(nodeWS.Node, node)
+		util.MergeNodeStatus(nodeWS.Node, node)
 		nm.nodeUpdates <- &ie.NodeEvent{
 			NodeId: nodeId,
 			Node:   nodeWS.Node.DeepCopy(),
@@ -289,15 +306,15 @@ func (nm *nodeManager) PrintNodeSummary() {
 	}
 }
 
-func NewNodeManager(ctx context.Context, checkPeriod time.Duration, nodeAgent nodeagent.NodeAgentClient, podManager ie.PodManagerInterface, sessionManager ie.SessionManagerInterface) *nodeManager {
+func NewNodeManager(ctx context.Context, nodeAgent nodeagent.NodeAgentClient, podManager ie.PodManagerInterface, sessionManager ie.SessionManagerInterface) *nodeManager {
 	return &nodeManager{
 		ctx:                ctx,
-		nodeUpdates:        make(chan interface{}, 100),
-		watchers:           []chan<- interface{}{},
+		nodeUpdates:        make(chan *ie.NodeEvent, 100),
+		watchers:           []chan<- *ie.NodeEvent{},
 		nodeAgent:          nodeAgent,
 		nodePodCidrManager: NewPodCidrManager(),
 		nodeDaemonManager:  NewNodeDaemonManager(),
-		houseKeepingTicker: time.NewTicker(checkPeriod),
+		houseKeepingTicker: time.NewTicker(DefaultStaleNodeTimeout),
 		podManager:         podManager,
 		sessionManager:     sessionManager,
 		nodes: NodePool{

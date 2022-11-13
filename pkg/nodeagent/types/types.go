@@ -23,7 +23,6 @@ import (
 	fornaxv1 "centaurusinfra.io/fornax-serverless/pkg/apis/core/v1"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/runtime"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // +enum
@@ -43,6 +42,8 @@ const (
 	PodStateTerminated PodState = "Terminated"
 	// PosStateFailed is a abnormal pod exit status when pod met unexpected condtion
 	PodStateFailed PodState = "Failed"
+	// one of pod container is hibernated
+	PodStateHibernated PodState = "Hibernated"
 )
 
 type ContainerState string
@@ -54,8 +55,8 @@ const (
 	ContainerStateStopped     ContainerState = "Stopped"
 	ContainerStateTerminated  ContainerState = "Terminated"
 	ContainerStateTerminating ContainerState = "Terminating"
-	ContainerStateStandby     ContainerState = "Standby"
-	ContainerStateReady       ContainerState = "Ready"
+	ContainerStateRunning     ContainerState = "Running"
+	ContainerStateHibernated  ContainerState = "Hibernated"
 	ContainerStateStarted     ContainerState = "Started"
 )
 
@@ -75,7 +76,6 @@ type FornaxNodeWithRevision struct {
 
 type FornaxPod struct {
 	Identifier              string                      `json:"identifier,omitempty"`
-	ApplicationId           types.UID                   `json:"applicationId,omitempty"`
 	FornaxPodState          PodState                    `json:"fornaxPodState,omitempty"`
 	Daemon                  bool                        `json:"daemon,omitempty"`
 	Pod                     *v1.Pod                     `json:"pod,omitempty"`
@@ -111,11 +111,6 @@ type FornaxSession struct {
 
 func UniquePodName(pod *FornaxPod) string {
 	return fmt.Sprintf("Namespace:%s,Name:%s,UID:%s", pod.Pod.Namespace, pod.Pod.Name, pod.Pod.UID)
-}
-
-func PodIsNotStandBy(pod *FornaxPod) bool {
-	//TODO if not standby pod
-	return true
 }
 
 func PodHasOpenSessions(pod *FornaxPod) bool {

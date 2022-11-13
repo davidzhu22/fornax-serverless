@@ -5,6 +5,7 @@ metadata:
   labels:
     name: nginx
 spec:
+  usingNodeSessionService: false
   scalingPolicy:
     minimumInstance: 0
     maximumInstance: 30

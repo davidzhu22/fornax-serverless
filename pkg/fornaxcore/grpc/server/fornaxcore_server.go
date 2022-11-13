@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
 
@@ -38,7 +39,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const FornaxCoreChanSize = 2
+const NodeOutgoingChanBufferSize = 20
+const DefaultNodeIncomingHandlerNum = 4
 
 type FornaxCoreServer interface {
 	fornaxcore_grpc.FornaxCoreServiceServer
@@ -49,10 +51,12 @@ var _ FornaxCoreServer = &grpcServer{}
 
 type grpcServer struct {
 	sync.RWMutex
-	nodeGetMessageChans map[string]chan<- *fornaxcore_grpc.FornaxCoreMessage
-
-	nodeMonitor ie.NodeMonitorInterface
 	fornaxcore_grpc.UnimplementedFornaxCoreServiceServer
+	nodeMonitor             ie.NodeMonitorInterface
+	nodeOutgoingChans       map[string]chan<- *fornaxcore_grpc.FornaxCoreMessage
+	nodeIncommingChans      map[string]chan *fornaxcore_grpc.FornaxCoreMessage
+	nodeIncommingChansMutex sync.Mutex
+	nodeMessageHandlerChans []chan *fornaxcore_grpc.FornaxCoreMessage
 }
 
 func (g *grpcServer) RunGrpcServer(ctx context.Context, nodeMonitor ie.NodeMonitorInterface, port int, certFile, keyFile string) error {
@@ -69,8 +73,6 @@ func (g *grpcServer) RunGrpcServer(ctx context.Context, nodeMonitor ie.NodeMonit
 			return err
 		}
 		opts = []grpc.ServerOption{grpc.Creds(creds)}
-	} else {
-
 	}
 
 	// start node agent grpc server
@@ -84,17 +86,29 @@ func (g *grpcServer) RunGrpcServer(ctx context.Context, nodeMonitor ie.NodeMonit
 		}
 	}()
 
+	for _, v := range g.nodeMessageHandlerChans {
+		go func(ch chan *fornaxcore_grpc.FornaxCoreMessage) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg := <-ch:
+					g.handleMessages(msg)
+				}
+			}
+		}(v)
+	}
 	return nil
 }
 
 func (g *grpcServer) enlistNode(node string, ch chan<- *fornaxcore_grpc.FornaxCoreMessage) error {
 	g.Lock()
 	defer g.Unlock()
-	if _, ok := g.nodeGetMessageChans[node]; ok {
+	if _, ok := g.nodeOutgoingChans[node]; ok {
 		return fmt.Errorf("node %s already has channel", node)
 	}
 	g.nodeMonitor.OnNodeConnect(node)
-	g.nodeGetMessageChans[node] = ch
+	g.nodeOutgoingChans[node] = ch
 	return nil
 }
 
@@ -102,13 +116,13 @@ func (g *grpcServer) delistNode(node string) {
 	g.Lock()
 	defer g.Unlock()
 	g.nodeMonitor.OnNodeDisconnect(node)
-	close(g.nodeGetMessageChans[node])
-	delete(g.nodeGetMessageChans, node)
+	close(g.nodeOutgoingChans[node])
+	delete(g.nodeOutgoingChans, node)
 }
 
 func (g *grpcServer) GetMessage(identifier *fornaxcore_grpc.NodeIdentifier, server fornaxcore_grpc.FornaxCoreService_GetMessageServer) error {
 	var messageSeq int64 = 0
-	ch := make(chan *fornaxcore_grpc.FornaxCoreMessage, FornaxCoreChanSize)
+	ch := make(chan *fornaxcore_grpc.FornaxCoreMessage, NodeOutgoingChanBufferSize)
 	if err := g.enlistNode(identifier.GetIdentifier(), ch); err != nil {
 		close(ch)
 		return fmt.Errorf("Fornax core has established channel with this node: %s", identifier)
@@ -134,58 +148,82 @@ func (g *grpcServer) GetMessage(identifier *fornaxcore_grpc.NodeIdentifier, serv
 	}
 }
 
+// get handeller channel to handle incomming message from this node, if not found,
+// randomly assign one channel in nodeMessageHandlerChans to this node and save it for following incomming messages from this node
+func (g *grpcServer) getNodeMessageHandlerChannel(nodeId string) chan *fornaxcore_grpc.FornaxCoreMessage {
+	g.nodeIncommingChansMutex.Lock()
+	defer g.nodeIncommingChansMutex.Unlock()
+	if messageCh, found := g.nodeIncommingChans[nodeId]; found {
+		return messageCh
+	} else {
+		i := rand.Intn(len(g.nodeMessageHandlerChans))
+		channel := g.nodeMessageHandlerChans[i]
+		g.nodeIncommingChans[nodeId] = channel
+		return channel
+	}
+}
+
+// PutMessage send node's message to handler to process message and return
 func (g *grpcServer) PutMessage(ctx context.Context, message *fornaxcore_grpc.FornaxCoreMessage) (*empty.Empty, error) {
+	messageCh := g.getNodeMessageHandlerChannel(message.GetNodeIdentifier().GetIdentifier())
+	messageCh <- message
+	return &emptypb.Empty{}, nil
+}
+
+func (g *grpcServer) handleMessages(message *fornaxcore_grpc.FornaxCoreMessage) {
 	var err error
 	var msg *fornaxcore_grpc.FornaxCoreMessage
 	switch message.GetMessageType() {
 	case fornaxcore_grpc.MessageType_NODE_REGISTER:
-		msg, err = g.nodeMonitor.OnRegistry(ctx, message)
+		msg, err = g.nodeMonitor.OnRegistry(message)
 	case fornaxcore_grpc.MessageType_NODE_READY:
-		msg, err = g.nodeMonitor.OnNodeReady(ctx, message)
+		msg, err = g.nodeMonitor.OnNodeReady(message)
 	case fornaxcore_grpc.MessageType_NODE_STATE:
-		msg, err = g.nodeMonitor.OnNodeStateUpdate(ctx, message)
+		msg, err = g.nodeMonitor.OnNodeStateUpdate(message)
 	case fornaxcore_grpc.MessageType_POD_STATE:
-		msg, err = g.nodeMonitor.OnPodStateUpdate(ctx, message)
+		msg, err = g.nodeMonitor.OnPodStateUpdate(message)
 	case fornaxcore_grpc.MessageType_SESSION_STATE:
-		msg, err = g.nodeMonitor.OnSessionUpdate(ctx, message)
+		msg, err = g.nodeMonitor.OnSessionUpdate(message)
 	default:
 		klog.Errorf(fmt.Sprintf("not supported message type %s, message %v", message.GetMessageType(), message))
 	}
-
 	if err != nil {
 		klog.ErrorS(err, "Failed to process a node message", "node", message.GetNodeIdentifier(), "msgType", message.GetMessageType())
 	}
-
 	if err == nodeagent.NodeRevisionOutOfOrderError {
 		g.DispatchNodeMessage(message.GetNodeIdentifier().GetIdentifier(), NewFullSyncRequest())
 	}
-
 	if msg != nil {
 		g.DispatchNodeMessage(message.GetNodeIdentifier().GetIdentifier(), msg)
 	}
-	return &emptypb.Empty{}, err
 }
 
 func (g *grpcServer) mustEmbedUnimplementedFornaxCoreServiceServer() {
 }
 
 func NewGrpcServer() *grpcServer {
+	handlerChans := []chan *fornaxcore_grpc.FornaxCoreMessage{}
+	for i := 0; i < DefaultNodeIncomingHandlerNum; i++ {
+		handlerChans = append(handlerChans, make(chan *fornaxcore_grpc.FornaxCoreMessage, 1000))
+	}
+
 	return &grpcServer{
 		RWMutex:                              sync.RWMutex{},
-		nodeGetMessageChans:                  make(map[string]chan<- *fornaxcore_grpc.FornaxCoreMessage),
+		nodeOutgoingChans:                    make(map[string]chan<- *fornaxcore_grpc.FornaxCoreMessage),
+		nodeIncommingChans:                   make(map[string]chan *fornaxcore_grpc.FornaxCoreMessage),
+		nodeMonitor:                          nil,
 		UnimplementedFornaxCoreServiceServer: fornaxcore_grpc.UnimplementedFornaxCoreServiceServer{},
+		nodeMessageHandlerChans:              handlerChans,
 	}
 }
 
 // CreatePod dispatch a PodCreate grpc message to node agent
 func (g *grpcServer) CreatePod(nodeIdentifier string, pod *v1.Pod) error {
-	mode := fornaxcore_grpc.PodCreate_Active
 	podIdentifier := util.Name(pod)
 	messageType := fornaxcore_grpc.MessageType_POD_CREATE
 	podCreate := fornaxcore_grpc.FornaxCoreMessage_PodCreate{
 		PodCreate: &fornaxcore_grpc.PodCreate{
 			PodIdentifier: podIdentifier,
-			Mode:          mode,
 			Pod:           pod.DeepCopy(),
 			ConfigMap:     &v1.ConfigMap{},
 		},
@@ -225,6 +263,28 @@ func (g *grpcServer) TerminatePod(nodeIdentifier string, pod *v1.Pod) error {
 	return nil
 }
 
+// HibernatePod dispatch a PodHibernate grpc message to node agent
+func (g *grpcServer) HibernatePod(nodeIdentifier string, pod *v1.Pod) error {
+	podIdentifier := util.Name(pod)
+	messageType := fornaxcore_grpc.MessageType_POD_HIBERNATE
+	podHibernate := fornaxcore_grpc.FornaxCoreMessage_PodHibernate{
+		PodHibernate: &fornaxcore_grpc.PodHibernate{
+			PodIdentifier: podIdentifier,
+		},
+	}
+	m := &fornaxcore_grpc.FornaxCoreMessage{
+		MessageType: messageType,
+		MessageBody: &podHibernate,
+	}
+
+	err := g.DispatchNodeMessage(nodeIdentifier, m)
+	if err != nil {
+		klog.ErrorS(err, "Failed to dispatch pod hibernate message to node", "node", nodeIdentifier, "pod", util.Name(pod))
+		return err
+	}
+	return nil
+}
+
 // CloseSession dispatch a SessionClose event to node agent
 func (g *grpcServer) CloseSession(nodeIdentifier string, pod *v1.Pod, session *fornaxv1.ApplicationSession) error {
 	sessionIdentifier := util.Name(session)
@@ -243,7 +303,7 @@ func (g *grpcServer) CloseSession(nodeIdentifier string, pod *v1.Pod, session *f
 
 	err := g.DispatchNodeMessage(nodeIdentifier, m)
 	if err != nil {
-		klog.ErrorS(err, "Failed to dispatch pod create message to node", "node", nodeIdentifier, "session", sessionIdentifier)
+		klog.ErrorS(err, "Failed to dispatch message to node", "node", nodeIdentifier, "session", sessionIdentifier)
 		return err
 	}
 	return nil
@@ -274,7 +334,7 @@ func (g *grpcServer) OpenSession(nodeIdentifier string, pod *v1.Pod, session *fo
 
 	err = g.DispatchNodeMessage(nodeIdentifier, m)
 	if err != nil {
-		klog.ErrorS(err, "Failed to dispatch pod create message to node", "node", nodeIdentifier, "session", sessionIdentifier)
+		klog.ErrorS(err, "Failed to dispatch message to node", "node", nodeIdentifier, "session", sessionIdentifier)
 		return err
 	}
 	return nil

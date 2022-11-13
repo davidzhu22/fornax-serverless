@@ -17,19 +17,24 @@ limitations under the License.
 package pod
 
 import (
+	"strings"
+
+	fornaxv1 "centaurusinfra.io/fornax-serverless/pkg/apis/core/v1"
 	"centaurusinfra.io/fornax-serverless/pkg/fornaxcore/grpc"
+	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/runtime"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/session"
 	"centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
 	fornaxtypes "centaurusinfra.io/fornax-serverless/pkg/nodeagent/types"
-	criv1 "k8s.io/cri-api/pkg/apis/runtime/v1"
+	"centaurusinfra.io/fornax-serverless/pkg/util"
+	v1 "k8s.io/api/core/v1"
 )
 
-func BuildFornaxcoreGrpcPodStateForTerminatedPod(nodeRevision int64, pod *fornaxtypes.FornaxPod) *grpc.FornaxCoreMessage {
+func BuildFornaxcoreGrpcPodStateForFailedPod(nodeRevision int64, pod *v1.Pod) *grpc.FornaxCoreMessage {
 	state := grpc.PodState_Terminated
 	s := grpc.PodState{
 		NodeRevision: nodeRevision,
 		State:        state,
-		Pod:          pod.Pod.DeepCopy(),
+		Pod:          pod.DeepCopy(),
 		Resource:     &grpc.PodResource{},
 	}
 	messageType := grpc.MessageType_POD_STATE
@@ -42,18 +47,34 @@ func BuildFornaxcoreGrpcPodStateForTerminatedPod(nodeRevision int64, pod *fornax
 }
 
 func BuildFornaxcoreGrpcPodState(nodeRevision int64, pod *fornaxtypes.FornaxPod) *grpc.FornaxCoreMessage {
+	sessionLables := []string{}
 	sessionStates := []*grpc.SessionState{}
-	for _, v := range pod.Sessions {
-		s := session.BuildFornaxcoreGrpcSessionState(nodeRevision, v)
-		sessionStates = append(sessionStates, s.GetSessionState())
+	// pod only report sessions currently bundle on it, session termninated state is supposed by reported already
+	// fornax core use session states in pod state to delete sessions which is not found
+	for _, sess := range pod.Sessions {
+		if !util.SessionInTerminalState(sess.Session) {
+			s := session.BuildFornaxcoreGrpcSessionState(nodeRevision, sess)
+			sessionStates = append(sessionStates, s.GetSessionState())
+			sessionLables = append(sessionLables, util.Name(sess.Session))
+		}
 	}
+
+	podWithSession := pod.Pod.DeepCopy()
+	labels := podWithSession.GetLabels()
+	if len(sessionLables) > 0 {
+		labels[fornaxv1.LabelFornaxCoreApplicationSession] = strings.Join(sessionLables, ",")
+	} else {
+		delete(labels, fornaxv1.LabelFornaxCoreApplicationSession)
+	}
+	podWithSession.Labels = labels
+
 	s := grpc.PodState{
-		NodeRevision: nodeRevision,
-		State:        PodStateToFornaxState(pod),
-		Pod:          pod.Pod.DeepCopy(),
-		// TODO
-		Resource:      &grpc.PodResource{},
+		NodeRevision:  nodeRevision,
+		State:         PodStateToFornaxState(pod),
+		Pod:           podWithSession,
 		SessionStates: sessionStates,
+		// TODO
+		Resource: &grpc.PodResource{},
 	}
 	messageType := grpc.MessageType_POD_STATE
 	return &grpc.FornaxCoreMessage{
@@ -73,6 +94,8 @@ func PodStateToFornaxState(pod *fornaxtypes.FornaxPod) grpc.PodState_State {
 		grpcState = grpc.PodState_Standby
 	case types.PodStateRunning:
 		grpcState = grpc.PodState_Running
+	case types.PodStateHibernated:
+		grpcState = grpc.PodState_Running
 	case types.PodStateTerminating:
 		grpcState = grpc.PodState_Terminating
 	case types.PodStateTerminated:
@@ -81,7 +104,7 @@ func PodStateToFornaxState(pod *fornaxtypes.FornaxPod) grpc.PodState_State {
 		// check container runtime state
 		allContainerTerminated := true
 		for _, v := range pod.Containers {
-			allContainerTerminated = allContainerTerminated && v.ContainerStatus != nil && v.ContainerStatus.RuntimeStatus != nil && v.ContainerStatus.RuntimeStatus.FinishedAt != 0 && v.ContainerStatus.RuntimeStatus.State == criv1.ContainerState_CONTAINER_EXITED
+			allContainerTerminated = allContainerTerminated && (v.ContainerStatus == nil || runtime.ContainerExit(v.ContainerStatus))
 		}
 		if allContainerTerminated {
 			grpcState = grpc.PodState_Terminated
