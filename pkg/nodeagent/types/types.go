@@ -44,6 +44,8 @@ const (
 	PodStateFailed PodState = "Failed"
 	// one of pod container is hibernated
 	PodStateHibernated PodState = "Hibernated"
+	// pod artifacts are cleaned, eg. pod dir, cgroup
+	PodStateCleanup PodState = "Cleanup"
 )
 
 type ContainerState string
@@ -123,7 +125,7 @@ func PodHasOpenSessions(pod *FornaxPod) bool {
 }
 
 func PodInTerminating(fppod *FornaxPod) bool {
-	return len(fppod.FornaxPodState) != 0 && (fppod.FornaxPodState == PodStateTerminating || fppod.FornaxPodState == PodStateTerminated)
+	return len(fppod.FornaxPodState) != 0 && (fppod.FornaxPodState == PodStateTerminating || fppod.FornaxPodState == PodStateTerminated || fppod.FornaxPodState == PodStateCleanup)
 }
 
 func PodCreated(fppod *FornaxPod) bool {

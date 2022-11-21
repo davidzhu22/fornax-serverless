@@ -39,7 +39,8 @@ type ActorRef interface {
 var _ ActorRef = &LocalChannelActorRef{}
 
 type LocalChannelActorRef struct {
-	Channel *chan ActorMessage
+	Identifier string
+	Channel    *chan ActorMessage
 }
 
 func Send(from, to ActorRef, msg interface{}) error {
@@ -51,7 +52,7 @@ func (a *LocalChannelActorRef) Receive(msg ActorMessage) error {
 	func() {
 		defer func() {
 			if err := recover(); err != nil {
-				klog.Errorf("channel panic occurred: %v", err)
+				klog.Errorf("channel panic occurred: %v, %v", err, msg)
 				err = errors.New("channel panic")
 			}
 		}()
@@ -87,7 +88,8 @@ func NewLocalChannelActor(identifier string, messageProcessor MessageProcessFunc
 // Reference implements Actor
 func (a *LocalChannelActor) Reference() ActorRef {
 	ref := LocalChannelActorRef{
-		Channel: &a.channel,
+		Identifier: a.Identifier,
+		Channel:    &a.channel,
 	}
 	return &ref
 }
@@ -125,10 +127,15 @@ func (a *LocalChannelActor) Start() {
 
 // Stop implements Actor
 func (a *LocalChannelActor) Stop() {
-	a.channel <- ActorMessage{
-		Sender: nil,
-		Body:   ActorStop{},
-	}
+	func() {
+		defer func() {
+			if err := recover(); err != nil {
+				klog.Errorf("channel panic occurred: %v, %v", err)
+			}
+		}()
+
+		a.channel <- ActorMessage{Sender: nil, Body: ActorStop{}}
+	}()
 }
 
 // OnReceive implements Actor
